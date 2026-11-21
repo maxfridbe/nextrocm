@@ -1,0 +1,30 @@
+{
+  "status": "SOURCE_READY_CPU_SELFTEST_PASS_GPU_PENDING",
+  "default_enabled": false,
+  "shape": [
+    64,
+    64,
+    16
+  ],
+  "lds_bytes": 8256,
+  "accumulators_per_thread": 16,
+  "arithmetic": "ascending Ci*k*k with padded16 zeroFMAs, F32bias, singleF16RNE",
+  "small_cases": 14,
+  "actual_full_baseline_bits": true,
+  "actual_independent_f64_outputs": 12,
+  "actual_f64_scope": "bounded samples, NOT full",
+  "timing": "two paired observations with reversed secondpair; all preprocessing included (none)",
+  "source_sha256": {
+    "kernels/image/qwenimage21/vae_conv64.hpp": "66939e9fb323ecc3db1114bbafa3301837c0c0bf488b8932f43bde9f1e144896",
+    "kernels/image/qwenimage21/tests/vae_conv64_runtime.hip": "0eccc0e8a2e065ace223f72049c896d523d2ee4939e0097a3c415917b2887aad",
+    "kernels/image/qwenimage21/tests/vae_conv64_numeric.cpp": "afab3b399c88243b51eb74fe54b81e8f97d073a24e9b18cd329bdfae88338ce9",
+    "kernels/image/qwenimage21/vae.hpp": "b7590d93f551d5503b9fa37e5b0652742c155833023dd876ae06017575cef957",
+    "kernels/image/qwenimage21/vae.hip": "64c026b7ab3b2257261e503bd799fed1f7bc45861c73e4909b91a32fd8229a14",
+    "kernels/image/qwenimage21/tests/vae_numeric.cpp": "66c84d58e498c82e9431876ec7a020429362c937d11156a2550d8f5147ad28f9"
+  },
+  "tracked_allocation_contract": {
+    "initial": 0,
+    "after_drop": 0,
+    "peak_upper_exclusive": 3221226112
+  }
+}

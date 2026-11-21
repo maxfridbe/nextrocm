@@ -1,0 +1,27 @@
+{
+  "id": "qwen3-coder-30b-a3b-q4",
+  "kind": "llm",
+  "arch": "qwen3moe",
+  "title": "Qwen3-Coder 30B A3B Q4_K_M",
+  "license": "apache-2.0",
+  "commercial": true,
+  "license_note": "Apache 2.0; source: https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct/resolve/b2cff646eb4bb1d68355c01b18ae02e7cf42d120/LICENSE",
+  "gpus": "0",
+  "ctx": "4096",
+  "vram_gib": 2.5,
+  "tools": true,
+  "env": {
+    "NS_PROMPT_CACHE_MIB": "256"
+  },
+  "defaults": {},
+  "guide": "guides/qwen3moe.md",
+  "files": {
+    "model": {
+      "key": "qwen3-coder-30b-a3b-q4-weights",
+      "url": "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/b17cb02dd882d5b6ab62fc777ad2995f19668350/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+      "size": 18556689568,
+      "sha256": "fadc3e5f8d42bf7e894a785b05082e47daee4df26680389817e2093056f088ad",
+      "path": "qwen3moe/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
+    }
+  }
+}

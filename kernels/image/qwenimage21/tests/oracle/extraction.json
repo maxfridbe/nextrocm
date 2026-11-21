@@ -1,0 +1,9 @@
+{
+  "source_sha256": "1665bffa9c0ef0e692f8799523a729879960a6aa07adaa32f9efb41f7076a3da",
+  "unchanged_function_sha256": [
+    "3c79e1353a357504edf9c876d48abe8b16367b8743afc462768aad7c08ece769",
+    "1d9f0788bb0887c68ad934600ec04c60975060e2f1f93e968830ff65248d557e",
+    "c1ee5103d1f4c76e49cd671626498af65529aa371103d3562bb361728d5506e2"
+  ],
+  "adapters": "minimal identical-layout structs, IEEE half conversion, macro declarations only"
+}

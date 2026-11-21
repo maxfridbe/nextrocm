@@ -1,0 +1,27 @@
+[package]
+name = "nextrocm-image-starvector"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Native Rust/HIP port of the pinned StarVector image.vectorize engine"
+
+[features]
+vision-taps = []
+patch-f32 = []
+vision-f32 = ["patch-f32"]
+operator-profile = []
+
+[[example]]
+name = "starvector_profile"
+required-features = ["operator-profile"]
+
+[[example]]
+name = "starvector_vision_taps"
+required-features = ["vision-taps"]
+
+[dependencies]
+nextrocm-engine-core = { path = "../../crates/engine-core" }
+nextrocm-gguf = { path = "../../crates/gguf" }
+nextrocm-tok = { path = "../../crates/tok" }
+nextrocm-image = { path = "../contract" }
+serde_json = "1"

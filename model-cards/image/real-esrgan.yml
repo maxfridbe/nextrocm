@@ -1,0 +1,23 @@
+id: real-esrgan
+kind: image
+arch: realesrgan
+license: bsd-3-clause
+commercial: true
+title: Real-ESRGAN x4plus (4x image upscaling)
+about: "development-host's RealESRGAN_x4plus checkpoint converted offline to the reference graph's half-weight format; native Rust/HIP tiled inference. RGB and RGBA; x4plus only."
+gpus: '0'
+vram_gib: 1.0
+defaults: {}
+env:
+  NS_ESRGAN_X4PLUS_BIN: '{realesrgan-x4plus.bin}'
+local:
+  realesrgan-x4plus.bin: 'Run tooling/convert-realesrgan.py on the verified development-host PTH, then set NS_ESRGAN_X4PLUS_BIN to the resulting bin when pulling this model. Expected SHA256: 3fd05236a1df65c032f0284eefbd893b178c1a258ea367d9fb9dfc29e4a4d631.'
+files:
+  realesrgan-x4plus.param:
+    key: realesrgan-x4plus-param
+    url: https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip
+    member: models/realesrgan-x4plus.param
+    size: 116029
+    sha256: 35330ececcea33b6c397a72548e788d5d53becee4734c50b7fada36e89f10a86
+    path: upscale/realesrgan/realesrgan-x4plus.param
+guide: guides/upscale.md

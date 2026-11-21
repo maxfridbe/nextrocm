@@ -1,0 +1,11 @@
+{
+  "status": "CPU -Werror/selftest PASS; independent review and GPU pending",
+  "files": {
+    "kernels/image/qwenimage21/convert.h": "5d512d75717250d745943fc5c7d95ec191fde5afd3aff22234d37309adfad623",
+    "kernels/image/qwenimage21/convert.hpp": "6ee811cfe32124ee507a3ec7c7cedfbf4c9862283335d6e78bcc11c41853b0aa",
+    "kernels/image/qwenimage21/tests/convert_runtime.hip": "c0414a93dfb056de773b170eb51a1091b283a378a49d20e4d21a4ec3250f8c10",
+    "kernels/image/qwenimage21/tests/convert_numeric.cpp": "986ae60714336a941e144e61a2958c57bdb08727bd1780486f92a42a2d3e737e"
+  },
+  "gate": "Exact bitwise for all non-NaN values, including signed zero/Inf, RNE F32->F16 with overflow to Inf. NaNs must remain NaNs; payload/sign unspecified. No numeric tolerance.",
+  "coverage": "All65536half encodings; all positive finite half midpoints with neighboringF32 and negatives; overflow/subnormal; tails1,2,3,255,256,257,4095,4096,4097; alias/null/count/alignment/wrap guards."
+}

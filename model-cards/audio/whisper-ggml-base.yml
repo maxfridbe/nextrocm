@@ -1,0 +1,19 @@
+# GPU validation and measured VRAM pending; vram_gib deliberately omitted.
+id: "whisper-ggml-base"
+kind: "audio"
+arch: "whisper-ggml"
+license: "mit"
+commercial: true
+title: "Whisper base (GGML)"
+about: "Native resident speech recognition; segment timestamps, no word timestamps or decoder prompts. Multilingual transcription and English translation."
+gpus: "0"
+defaults: {}
+env: {}
+files:
+  model:
+    key: "whisper-ggml-base-weights"
+    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin"
+    size: 147951465
+    sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+    path: "whisper-ggml/ggml-base.bin"
+guide: guides/lowvram-speech.md

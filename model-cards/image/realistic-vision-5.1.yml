@@ -1,0 +1,51 @@
+{
+  "id": "realistic-vision-5.1",
+  "kind": "image",
+  "arch": "sd15",
+  "title": "Realistic Vision 5.1 + MSE VAE",
+  "license": "creativeml-openrail-m",
+  "commercial": true,
+  "license_note": "CreativeML OpenRAIL-M usage conditions apply; external MSE VAE is MIT. Source: https://huggingface.co/SG161222/Realistic_Vision_V5.1_noVAE/tree/1e9f017a7b1eaefb63a1900ea6c5953d2739fd21",
+  "gpus": "0",
+  "vram_gib": 4.0,
+  "env": {
+    "NS_SD15_VARIANT": "rv51"
+  },
+  "defaults": {
+    "width": 512,
+    "height": 512,
+    "steps": 25,
+    "cfg": 5.0
+  },
+  "guide": "guides/sd15.md",
+  "files": {
+    "checkpoint": {
+      "key": "sd15-rv51-checkpoint",
+      "url": "https://huggingface.co/SG161222/Realistic_Vision_V5.1_noVAE/resolve/1e9f017a7b1eaefb63a1900ea6c5953d2739fd21/Realistic_Vision_V5.1_fp16-no-ema.safetensors",
+      "size": 2132625894,
+      "sha256": "99a75a901f4fec732056930a89fa34cf360f6f72d75ce5bf333ddf82adf8dd2a",
+      "path": "sd15/Realistic_Vision_V5.1_fp16-no-ema.safetensors"
+    },
+    "vae": {
+      "key": "sd15-mse-vae",
+      "url": "https://huggingface.co/stabilityai/sd-vae-ft-mse-original/resolve/629b3ad3030ce36e15e70c5db7d91df0d60c627f/vae-ft-mse-840000-ema-pruned.safetensors",
+      "size": 334641190,
+      "sha256": "735e4c3a447a3255760d7f86845f09f937809baa529c17370d83e4c3758f3c75",
+      "path": "sd15/vae-ft-mse-840000-ema-pruned.safetensors"
+    },
+    "vocab": {
+      "key": "sd15-clip-vocab",
+      "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/32bd64288804d66eefd0ccbe215aa642df71cc41/vocab.json",
+      "size": 961143,
+      "sha256": "3f0c4f7d2086b61b38487075278ea9ed04edb53a03cbb045b86c27190fa8fb69",
+      "path": "sd15/tokenizer/vocab.json"
+    },
+    "merges": {
+      "key": "sd15-clip-merges",
+      "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/32bd64288804d66eefd0ccbe215aa642df71cc41/merges.txt",
+      "size": 524619,
+      "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a",
+      "path": "sd15/tokenizer/merges.txt"
+    }
+  }
+}

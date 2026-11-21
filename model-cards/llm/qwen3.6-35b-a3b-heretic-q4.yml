@@ -1,0 +1,34 @@
+{
+  "id": "qwen3.6-35b-a3b-heretic-q4",
+  "kind": "llm",
+  "arch": "qwen35moe",
+  "title": "Qwen3.6 35B A3B Heretic Q4_K_M",
+  "license": "apache-2.0",
+  "commercial": true,
+  "license_note": "Apache 2.0; source: https://huggingface.co/Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF/tree/4c22107061e656fb2a87a3ec2491bb61975eb581",
+  "gpus": "0",
+  "ctx": "4096",
+  "vram_gib": 3.0,
+  "tools": true,
+  "env": {
+    "NS_PROMPT_CACHE_MIB": "256",
+    "NS_Q35_PAGE_CACHE": "1",
+    "NS_Q35_PINNED_STAGE": "1",
+    "NS_Q35_CHUNK": "64",
+    "NS_Q35_SCALAR": "3",
+    "NS_Q35_PREFETCH_MIB": "32",
+    "NS_Q35_HOST_MIB": "2048",
+    "NS_Q35_EXPERT_PROFILE": "/home/developer/.config/nextrocm/profiles/qwen36-experts.json"
+  },
+  "defaults": {},
+  "guide": "guides/qwen36.md",
+  "files": {
+    "model": {
+      "key": "qwen3.6-35b-a3b-heretic-q4-weights",
+      "url": "https://huggingface.co/Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF/resolve/4c22107061e656fb2a87a3ec2491bb61975eb581/Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M/Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M.gguf",
+      "size": 21166758336,
+      "sha256": "ae2fb73ac0da875640269f1e65e9c7fb415b066c6d544c3eef9adb0d03f04792",
+      "path": "qwen36/Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M.gguf"
+    }
+  }
+}

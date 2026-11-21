@@ -1,0 +1,19 @@
+[package]
+name = "nextrocm-image-paddleocrvl"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "PaddleOCR-VL 1.6 native Rust/HIP engine"
+
+# Private standalone build until the shared wiring patch is applied.
+[workspace]
+
+[dependencies]
+nextrocm-ops = { path = "../../crates/ops" }
+nextrocm-engine-core = { path = "../../crates/engine-core" }
+nextrocm-image = { path = "../contract" }
+nextrocm-diffusion = { path = "../../crates/diffusion" }
+nextrocm-gguf = { path = "../../crates/gguf" }
+nextrocm-tok = { path = "../../crates/tok" }
+serde_json = "1"
+sha2 = "0.10"

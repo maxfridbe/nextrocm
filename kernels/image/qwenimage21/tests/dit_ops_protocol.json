@@ -1,0 +1,15 @@
+{
+  "status": "prospective before GPU; agreed with Rust graph owner Aristotle",
+  "abi": {
+    "nrqi_ln_mod": "int(void*g,const float*x,int64 M,int64 C,float eps,const float*scale,void*f16out)",
+    "nrqi_rms_rope": "int(void*g,void*f16x,int64 M,int64 H,int64 D,int64 stride,const float*weight,float eps,const float*cs,int rot_dim)",
+    "nrqi_text_rms_f32": "int(void*g,const float*x,int64 M,int64 C,const float*weight,float eps,float*out)",
+    "nrqi_gate_add_f32_f16": "int(void*g,float*x,const void*f16other,int64 M,int64 C,const float*gate)"
+  },
+  "f16_gate": "abs(native - independent_F64_result_rounded_to_F16) <= max(distance_to_next_lower_half,distance_to_next_upper_half) + 0.00002",
+  "f32_gate": "abs(native-independent_F64_result) <= 0.00002 + 0.00002*abs(independent_F64_result)",
+  "reports": ["max_absolute", "L2_relative_global_norm_floor_1e-30", "maximum_half_ULP_distance", "all_finite", "untouched_strided_lanes", "input_immutability", "allocation_guards"],
+  "semantics": "LN centered population variance; optional broadcast1+scale; text RMS weight already host-adjusted+1; RMSRoPE ascending F32 square sum per head, NEOX split-half after original Q/K weight permutation, no intermediate half rounding; residual F32 += halfother * broadcastgate; scales/gates selected by Rust modulation row; host modulation tanh/split unchanged",
+  "actual_shapes": {"width":4096,"heads":32,"head_width":128,"qkv_stride":12288,"epsilon":0.000001,"rope_axes":[16,56,56]},
+  "scope": "private DiT operators only; no shared binders, production registration, GPU runs or model precision admission"
+}

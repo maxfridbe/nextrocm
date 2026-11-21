@@ -1,0 +1,10 @@
+[package]
+name = "nextrocm-gguf"
+description = "The model file formats: GGUF v3 (the header, every metadata value, the tensor directory; split files), safetensors and PyTorch checkpoints. No ggml."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "precision_variant": "decoder-f32-original",
+  "base_protocol_sha256": "4c65ac84f3d977babc570e42443805dd7cddfe6c58b56106c05a354b87afde09",
+  "reference": "Unmodified pinned Transformers 5.20 original all-F32 execution, same immutable CPU arrays as the original side of the frozen F16 contract.",
+  "control": "Identity copy of original F32 arrays; every control/original stage must be byte-identical.",
+  "decoder_weights": "Original BF16 checkpoint values expanded exactly to F32; no F16 weight conversion.",
+  "decoder_linear_inputs": "F32, without F16 input rounding.",
+  "decoder_linear_accumulation_and_output": "F32",
+  "vision": "Unchanged F32 implementation and original F32 arrays.",
+  "cpu_precision_allowance": 0,
+  "vision_gates": {"max_relative": 0.0005, "rms_relative": 0.0001, "cosine_min": 0.999999},
+  "decoder_gates": {"max_relative": 0.001, "rms_relative": 0.0002, "cosine_min": 0.999999},
+  "logits_gates": {"max_relative": 0.0005, "rms_relative": 0.0001, "cosine_min": 0.999999},
+  "coverage": "Every full-shape finite vision/decoder layer, prefill and generated-step logits; exact original prompt positions, greedy tokens and stop. All checks of the base protocol remain mandatory.",
+  "initial_native_controls": {"NS_POCR_DECODER_F32": "1", "NS_POCR_LINEAR8": "0", "NS_POCR_ATTN_PROB": "1"},
+  "memory_limit_bytes_exclusive": 8000000000,
+  "estimated_additional_resident_bytes": 721420288,
+  "status": "Prospective alternative precision contract; frozen before any native F32 decoder comparison. Does not modify or supersede the failed F16 contract."
+}

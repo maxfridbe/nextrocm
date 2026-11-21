@@ -1,0 +1,14 @@
+[package]
+name = "nextrocm-vision-qwen3vl"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Private staged F32 Qwen3-VL ConvRot text encoder under validation"
+
+[workspace]
+
+[dependencies]
+nextrocm-engine-core = { path = "../../crates/engine-core" }
+nextrocm-gguf = { path = "../../crates/gguf" }
+nextrocm-tok = { path = "../../crates/tok" }
+serde_json = "1"

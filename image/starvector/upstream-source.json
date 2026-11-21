@@ -1,0 +1,16 @@
+{
+  "source": "nextcuda",
+  "commit": "5733ec695f53eede3700d43678228bd693f582c6",
+  "files_sha256": {
+    "src/check.rs": "eca4a568c7bca7fd1436be80e9dac920eaa052a48cb8561b05be23bfd7dcb143",
+    "src/ffi.rs": "c135d2d555d2617b774e7e4b3a2fac7c22a4ee517e6ba862a94e2e08a1fe8eba",
+    "src/gen.rs": "74ff8163dbafa969f77b4836ce06962e016c31738a1b6db51eb65d3399db84bb",
+    "src/model.rs": "678abb1f9698d8e1a14cd021984296a45a8c233c03ee27d3c0916751fd01bcd8",
+    "src/pre.rs": "decf39d9d16d9edf66e22433a2ef59ee3db09e623a81dc91e731e5b430d543db",
+    "src/text.rs": "d59955f33fc5a0aa3658ac5f6f8ffb609125e36c11155c4e6167b0fa84592d8a",
+    "src/lib.rs": "e455453928e0bbe11b54a897b58263d63376158332a9ec5dd87bdaa719b8b56e"
+  },
+  "nextsycl": "checkout not present; no comparison claimed",
+  "reference_script_sha256": "400493cd7a286e8992e108243beadcad852c1d086ee21653d4f9e8b521e7d6cf",
+  "private_port_status": "parent isolated cargo check passed; post-check validator shape/pixel-gate tightening needs recheck; HIP operator/CPU oracle pending"
+}

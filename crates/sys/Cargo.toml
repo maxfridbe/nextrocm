@@ -1,0 +1,9 @@
+[package]
+name = "nextrocm-sys"
+description = "Raw bindings to libnextrocm (kernels/ns/ns.h), loaded at run time"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]

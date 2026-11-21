@@ -1,0 +1,35 @@
+{
+  "status": "EXACT_UPSTREAM_SOURCE_AND_NOTICE_RECOVERED",
+  "upstream": "vibe-creative-platform",
+  "revision": "4ce40a4",
+  "license_git_blob": "32e24d1dab0a432a6179b17f3714f083f718f92e",
+  "license_sha256": "1833c6a5f2834ddb37067fb3e16625efa8303ae370bc072240e2c7eb1c288192",
+  "matched_source_files": [
+    {
+      "path": "rpcgen/Cargo.toml",
+      "git_blob": "5b2868078c1f10abdb3d0e2c46e6a6e5830a63d9",
+      "sha256": "74c82e476add1527eb2c29bd67918441fb463edf2226e5fef340a9fcd7316700"
+    },
+    {
+      "path": "rpcgen/macros/Cargo.toml",
+      "git_blob": "651296838f898cfe1cb3b825c29fb9d7a60aa1dd",
+      "sha256": "cef2eccb40e23894a3b11f741b4df121823bc764b2ccacd699d15e9a0094bb17"
+    },
+    {
+      "path": "rpcgen/src/lib.rs",
+      "git_blob": "a4a4bc8c6d87f29e28ead7dd8b3ea32d5b538f7f",
+      "sha256": "ba1e8863fbf69df3e67b953c7d809a2c086f6df7d3e83dc1cca37584cdfc9b5b"
+    },
+    {
+      "path": "rpcgen/src/route.rs",
+      "git_blob": "33101dd12b126284253ee31eee40f8696c41b476",
+      "sha256": "787fde7691a714c427ee123280776086ef35d52b94c4b1288fad86efe00652d2"
+    },
+    {
+      "path": "rpcgen/macros/src/lib.rs",
+      "git_blob": "4fab7f853d734330b42b59868ee93180f357659b",
+      "sha256": "52acd98c4c33c20b12edefdf589332b39c863ed44728ad1e1813bc69269eeaa3"
+    }
+  ],
+  "scope": "upstream root MIT notice applies to this unchanged rpcgen subtree; both package manifests declare MIT; no rpcgen-specific overriding notice found; no blanket grant for nextrocm"
+}

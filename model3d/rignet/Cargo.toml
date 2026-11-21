@@ -1,0 +1,15 @@
+[package]
+name = "nextrocm-model3d-rignet"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "RigNet native Rust/HIP mesh rigging"
+
+[dependencies]
+nextrocm-engine-core = { path = "../../crates/engine-core" }
+nextrocm-ops = { path = "../../crates/ops" }
+nextrocm-gguf = { path = "../../crates/gguf" }
+nextrocm-model3d = { path = "../contract" }
+serde_json = "1"
+miniz_oxide = "0.8"
+sha2 = "0.10"

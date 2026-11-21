@@ -1,0 +1,13 @@
+[package]
+name = "nextrocm-llm-inkling2"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Inkling 2 Mini plans, bounded storage and operator probes; full inference pending"
+
+[dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }
+nextrocm-gguf = { path = "../../crates/gguf" }
+nextrocm-engine-core = { path = "../../crates/engine-core" }
+nextrocm-tok = { path = "../../crates/tok" }
+nextrocm-llm = { path = "../contract" }

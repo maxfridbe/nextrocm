@@ -1,0 +1,15 @@
+[package]
+name = "nextrocm-llm-stablelm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Bounded native StableLM 3B GGUF engine"
+
+[dependencies]
+nextrocm-engine-core = { path = "../../crates/engine-core" }
+nextrocm-gguf = { path = "../../crates/gguf" }
+nextrocm-llm = { path = "../contract" }
+nextrocm-tok = { path = "../../crates/tok" }
+
+[dev-dependencies]
+serde_json = "1"

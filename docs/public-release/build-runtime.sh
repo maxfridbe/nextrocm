@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${SOURCE_ROOT:-$(dirname "$0")/../..}"
+: "${GPU_ARCH:?Set GPU_ARCH=gfx1035 for the validated target}"
+[[ "$GPU_ARCH" == gfx1035 ]] || { echo 'Only validated gfx1035 packaging is frozen' >&2; exit 1; }
+: "${OUT_DIR:?Choose a new absolute staging directory; never dist}"
+[[ "$OUT_DIR" == /* && ! -e "$OUT_DIR" ]] || { echo 'OUT_DIR must be new and absolute' >&2; exit 1; }
+mkdir -p "$OUT_DIR/objects"
+build="$OUT_DIR/objects"
+lowvram_wave_size=32
+# Existing29-model flags preserved; new QwenTUs use independently frozen flags.
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -DNRQV_ORDERED_STRICT_TU=1 -c kernels/vision/qwen3vl/qv.hip -o "$build/base.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -DNRQV_ORDERED_STRICT_TU=1 -ffp-contract=off -fno-unsafe-math-optimizations -fno-approx-func -c kernels/vision/qwen3vl/qv_ordered_strict.hip -o "$build/headnorm.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -fno-unsafe-math-optimizations -fno-approx-func -c kernels/vision/qwen3vl/qv_rms4096_strict.hip -o "$build/rms.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -c kernels/vision/qwen3vl/qv_attention_divide.hip -o "$build/attention.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -c kernels/vision/qwen3vl/qv_attention_tree32.hip -o "$build/tree.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -fno-fast-math -fno-unsafe-math-optimizations -fno-approx-func -fdenormal-fp-math=ieee -c kernels/vision/qwen3vl/qv_attention_source32.hip -o "$build/source.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -fno-fast-math -fno-unsafe-math-optimizations -fno-approx-func -fdenormal-fp-math=ieee -c kernels/vision/qwen3vl/qv_silu_source.hip -o "$build/silu.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -fno-fast-math -fno-unsafe-math-optimizations -fno-approx-func -fdenormal-fp-math=ieee -c kernels/vision/qwen3vl/qv_attention_order32.hip -o "$build/order.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -c kernels/image/qwenimage21/tests/combined_packed_expanded_runtime.hip -o "$build/packed.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -c kernels/image/qwenimage21/tests/dit_ops_runtime.hip -o "$build/dit_ops.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -c kernels/image/qwenimage21/tests/aux_runtime.hip -o "$build/aux.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -c kernels/image/qwenimage21/tests/convert_runtime.hip -o "$build/convert.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -c kernels/image/qwenimage21/tests/trajectory_runtime.hip -o "$build/trajectory.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -c kernels/image/qwenimage21/tests/attention_runtime.hip -o "$build/image_attention.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -c kernels/image/qwenimage21/tests/vae_conv64_runtime.hip -o "$build/vae.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -c kernels/image/qwenimage21/tests/attention_1024_runtime.hip -o "$build/attention1024.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -ffp-contract=off -c kernels/image/qwenimage21/tests/attention_batched_runtime.hip -o "$build/attention_batched.o"
+"${HIPCC:-hipcc}" -Ikernels/ns -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -DNR_LOWVRAM_WAVE_SIZE="$lowvram_wave_size" -x hip -c kernels/audio/lowvram/ops.hip -o "$build/lowvram-ops.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -Ikernels/ns -ffp-contract=off -fno-unsafe-math-optimizations -fno-approx-func -c kernels/llm/inkling2/quant_wave32_dispatch.hip -o "$build/inkling-quant.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -Ikernels/ns -ffp-contract=off -fno-fast-math -c kernels/llm/inkling2/primitives.hip -o "$build/inkling-primitives.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -Ikernels/ns -ffp-contract=off -c kernels/llm/inkling2/state.hip -o "$build/inkling-state.o"
+"${HIPCC:-hipcc}" -std=c++17 -O2 -fPIC --offload-arch="$GPU_ARCH" -Ikernels/ns -ffp-contract=off -fno-unsafe-math-optimizations -fno-approx-func -c kernels/llm/inkling2/mix.hip -o "$build/inkling-mix.o"
+"${HIPCC:-hipcc}" -Ikernels/ns -std=c++17 -O2 -fPIC -shared -DNR_STARVECTOR_FFN_SMALL_M=1 --offload-arch="$GPU_ARCH" -x hip kernels/ns/ns.hip kernels/selftest.hip kernels/image/rembg/rb.hip kernels/diffusion/vision.hip kernels/image/upscale/up.hip kernels/image/sd15/sd15.hip kernels/image/starvector/starvector.hip kernels/llm/stablelm/stablelm.hip kernels/llm/qwen35/qwen35.hip kernels/llm/qwen35/batch.hip kernels/llm/qwen35/scalar_fast.hip kernels/llm/qwen3moe/qwen3moe.hip kernels/ops/speech.hip kernels/model3d/rignet/rignet.hip kernels/audio/minimaxmusic3/mm3.hip kernels/audio/qwen3tts/q3t.hip kernels/audio/voxcpm2/vcp.hip kernels/audio/whisper/whisper.hip kernels/audio/lowvram/selftest.cpp kernels/audio/lowvram/bridge.cpp kernels/audio/lowvram/canary.cpp kernels/audio/lowvram/whisper.cpp kernels/audio/lowvram/qwen.cpp kernels/audio/lowvram/gguf.cpp kernels/audio/lowvram/bpe.cpp kernels/audio/lowvram/wav.cpp -x none "$build/lowvram-ops.o" "$build/base.o" "$build/headnorm.o" "$build/rms.o" "$build/attention.o" "$build/tree.o" "$build/source.o" "$build/silu.o" "$build/order.o" "$build/packed.o" "$build/dit_ops.o" "$build/aux.o" "$build/convert.o" "$build/trajectory.o" "$build/image_attention.o" "$build/vae.o" "$build/attention1024.o" "$build/attention_batched.o" "$build/inkling-quant.o" "$build/inkling-primitives.o" "$build/inkling-state.o" "$build/inkling-mix.o" -o "$OUT_DIR/libnextrocm-runtime.so"
+sha256sum "$OUT_DIR/libnextrocm-runtime.so"

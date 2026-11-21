@@ -1,0 +1,17 @@
+{
+  "id": "vibevoice-metadata",
+  "files": [
+    {
+      "url": "https://huggingface.co/callgg/vibevoice-bf16/resolve/bb2a0896604ab1daa7bce8016ffe260f72e0a7a9/config.json",
+      "size": 2762,
+      "sha256": "b0d6db52f45dd5179b42217c55112aa2ee66e7ad7b40b0950833c9f6780a0f21",
+      "name": "config.json"
+    },
+    {
+      "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B/resolve/8faed761d45a263340a0528343f099c05c9a4323/tokenizer.json",
+      "size": 7031645,
+      "sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+      "name": "tokenizer.json"
+    }
+  ]
+}

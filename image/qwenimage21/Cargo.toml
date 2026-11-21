@@ -1,0 +1,33 @@
+[package]
+name = "nextrocm-image-qwenimage21"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Private native Qwen-Image-2.1 Turbo port under numerical validation"
+
+[dependencies]
+nextrocm-image = { path = "../contract" }
+nextrocm-vision-qwen3vl = { path = "../../vision/qwen3vl" }
+nextrocm-engine-core = { path = "../../crates/engine-core" }
+nextrocm-gguf = { path = "../../crates/gguf" }
+
+serde_json = "1"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+
+[features]
+operator-profile = []
+
+[[example]]
+name = "dit_profile"
+required-features = ["operator-profile"]
+
+[[example]]
+name = "profile_1024"
+required-features = ["operator-profile"]
+
+[[example]]
+name = "profile_1024_expanded"
+required-features = ["operator-profile"]

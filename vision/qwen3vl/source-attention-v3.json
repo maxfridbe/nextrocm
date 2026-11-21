@@ -1,0 +1,31 @@
+{
+  "scope": "Private default-off P-first candidate; host/kernel independent review CLEAR; GPU and fullTE gates pending",
+  "files": {
+    "kernels/ns/ns.h": "f5fb402b461f69a7946928988c79c6ce0efe0790c794b0ec6066eb577db17244",
+    "kernels/ns/ns.hip": "e40d6b19ffe89e3e351bb791c442a3dd148f29c31339289343fcc1a999fd77d2",
+    "kernels/ns/ns_internal.hpp": "cd22e1d582650e9ef724462d28444f3b3453f8e38d8db2b3f410f4fc22372a2c",
+    "kernels/ops/speech.hip": "05fa2020a4f8f5155f13755a50eae7ffb4a2fd90502675699eaccaf0c2b4fd32",
+    "kernels/vision/qwen3vl/attention_prob.hpp": "41448f371b3d3460b2bc2a596c16770bd32faadb9d317f657c9656844e801bd5",
+    "kernels/vision/qwen3vl/int8_convrot.hpp": "e47a8704baa1b3e11e73ed21a5d46bcdd30359f2e534754c8bbf66cb8ada215c",
+    "kernels/vision/qwen3vl/qv.h": "d1df37ee5ce65b9179aaa3a1d149fef028f33af22c1e6254a1255899418c457a",
+    "kernels/vision/qwen3vl/qv.hip": "7f04605d82e1fdf4dd5fd0ccea6a8f16abfdf5fee54a025378a3496d1831c891",
+    "kernels/vision/qwen3vl/tests/ATTENTION_PROB.md": "1ca45e573477f6354184e8d68fb4bb567d37cb592f4cf237350ded2a5728e6b4",
+    "kernels/vision/qwen3vl/tests/attention_prob_numeric.cpp": "9ec0a9a8e624b4909f06a80c991eed5a55a6bd5066205fd1cb68c62b78e3201f",
+    "kernels/vision/qwen3vl/tests/rms_rope_numeric.cpp": "692ddb3c2f0a8cc21b1d431b8c142f2b0549c6f32fbe0ec4c2b7be6159014985",
+    "vision/qwen3vl/Cargo.lock": "1c7da18319e7c4ba8650d8567bd49af213253e90a2611490635487080ee7edc5",
+    "vision/qwen3vl/Cargo.toml": "73cde31b2d75c7de6e5f55cb7aa817595336aadbacdce36457987e05312dfe20",
+    "vision/qwen3vl/README.md": "1fe792d3cf771e89fd28101815c1b27ac1409389b77ffba663fb73c1acffcbd3",
+    "vision/qwen3vl/examples/encode.rs": "8a094a25d539d36ccf959907f02f35182005abbdb76d05697fcb4594069d12a3",
+    "vision/qwen3vl/examples/tokenize.rs": "0a356524f81a01d2d41d916c94bccc8f9763660310e6a8afe31790469aabaddc",
+    "vision/qwen3vl/examples/trace_layer0.rs": "5a0b08359998726bea7bc1d5d11601c1de29d90d983bf2791955e7898c8b49b7",
+    "vision/qwen3vl/src/ffi.rs": "eba6a2a88523e5ee6dbe320b0b6047ff69d43896fdbc65c31960778cef9974de",
+    "vision/qwen3vl/src/lib.rs": "f5ed8af7ef1bb805ed5936185b15f35373bbca741b5db443860eb1676120dce6",
+    "vision/qwen3vl/src/weights.rs": "dcb865b9b6b763b210499b6ffa7313ebcb9b1e851326b0861aa5965215652200"
+  },
+  "actual_qkv": {
+    "path": "/tmp/qi21-te-trace-native-v1/qkv.rope.bin",
+    "bytes": 786432,
+    "sha256": "ec06219303886956a58e931c4e63d9936b5203964f1ea1bd50dcdefb2ce6e97a"
+  },
+  "prior_diagnostic_manifest_sha256": "65968f33df9e6f9fd1ad2d3786de532ed1aadb6846d80ae67114f2df92066136"
+}

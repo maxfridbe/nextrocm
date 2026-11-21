@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+exclude = ["vision/qwen3vl"]
+members = ["llm/inkling2", "image/qwenimage21", "image/starvector", "model3d/rignet", "crates/remover", "image/rembg", "audio/voxcpm2", "image/sd15", "llm/qwen3moe", "llm/qwen35", "image/upscale", "llm/stablelm", "audio/lowvram", "audio/vibevoice", "glue/models", "glue/serve", "llm/contract", "image/contract", "model3d/contract", "crates/diffusion", "crates/mesh", "crates/sys", "crates/core", "crates/gguf", "crates/scheduler", "cli/nextrocm", "crates/engine-core", "crates/tok", "crates/ops", "audio/contract", "audio/whisper", "audio/qwen3tts", "crates/codec12hz"]
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+license = "MIT"
+[workspace.dependencies]
+nextrocm-llm-inkling2 = { path = "llm/inkling2" }
+nextrocm-image-qwenimage21 = { path = "image/qwenimage21" }
+nextrocm-image-starvector = { path = "image/starvector" }
+nextrocm-model3d-rignet = { path = "model3d/rignet" }
+nextrocm-remover = { path = "crates/remover" }
+nextrocm-image-rembg = { path = "image/rembg" }
+nextrocm-audio-voxcpm2 = { path = "audio/voxcpm2" }
+nextrocm-image-sd15 = { path = "image/sd15" }
+nextrocm-llm-qwen3moe = { path = "llm/qwen3moe" }
+nextrocm-llm-qwen35 = { path = "llm/qwen35" }
+nextrocm-image-upscale = { path = "image/upscale" }
+nextrocm-llm-stablelm = { path = "llm/stablelm" }
+nextrocm-audio-lowvram = { path = "audio/lowvram" }
+nextrocm-audio-vibevoice = { path="audio/vibevoice" }
+backplane-scheduler = { path="crates/scheduler" }
+nextrocm-models = { path="glue/models" }
+nextrocm-serve = { path="glue/serve" }
+nextrocm-llm = { path="llm/contract" }
+nextrocm-image = { path="image/contract" }
+nextrocm-model3d = { path="model3d/contract" }
+nextrocm-diffusion = { path="crates/diffusion" }
+nextrocm-mesh = { path="crates/mesh" }
+nextrocm-codec12hz={path="crates/codec12hz"}
+nextrocm-audio-qwen3tts={path="audio/qwen3tts"}
+nextrocm-sys = { path="crates/sys" }
+nextrocm-engine-core = { path="crates/engine-core" }
+nextrocm-gguf = { path="crates/gguf" }
+nextrocm-tok = { path="crates/tok" }
+nextrocm-ops = { path="crates/ops" }
+nextrocm-audio = { path="audio/contract" }
+nextrocm-audio-whisper = { path="audio/whisper" }
+serde_json = { version = "1", features = ["preserve_order"] }
+[profile.release]
+debug = 1

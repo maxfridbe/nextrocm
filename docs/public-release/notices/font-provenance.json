@@ -1,0 +1,11 @@
+{
+  "font": "Symbols Nerd Font Mono Regular",
+  "source_tag": "v3.4.0",
+  "source_url": "https://raw.githubusercontent.com/ryanoasis/nerd-fonts/v3.4.0/patched-fonts/NerdFontsSymbolsOnly/SymbolsNerdFontMono-Regular.ttf",
+  "font_sha256": "f0f624d9b474bea1662cf7e862d44aebe1ae1f6c7f9cb7a0ca5d0e5ac9561c60",
+  "license_url": "https://raw.githubusercontent.com/ryanoasis/nerd-fonts/v3.4.0/patched-fonts/NerdFontsSymbolsOnly/LICENSE",
+  "license_sha256": "84a7a98c82140fb12c37fe42b93805baa16024cb3e5acc599b7ffe612c55d847",
+  "action": "public-export-only replacement of font with unknown provenance; CSS source URL/format changed to TTF; family/style/layout unchanged",
+  "coverage": "all32 icon codepoints used by the UI are present; not a claim of identical outlines",
+  "production_files_unchanged": true
+}

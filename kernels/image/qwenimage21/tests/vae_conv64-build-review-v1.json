@@ -1,0 +1,33 @@
+{
+  "status": "CLEAR",
+  "scope": "compiled resource/accumulator structure review, numerical GPU tests separate",
+  "assembly_sha256": "ed56fda209db0073aaef883c0092bcb7bd21880be3dd1168de7f9d7d0799a53f",
+  "lds_bytes": 8256,
+  "private_segment_bytes": 0,
+  "vgprs": 65,
+  "sgprs_metadata": 52,
+  "scratch_instructions": 0,
+  "dot_accumulator_registers": [
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    38,
+    39
+  ],
+  "fmac_per_accumulator_per_tile": 16,
+  "bias_add_then_final_half": true,
+  "round_mode_f32": 0,
+  "denorm_f32": 3,
+  "ieee_mode": 1
+}

@@ -1,0 +1,25 @@
+{
+  "id": "stable-code-instruct-3b-q4",
+  "kind": "llm",
+  "arch": "stablelm",
+  "title": "Stable Code Instruct 3B Q4_K_M",
+  "license": "stabilityai-community",
+  "license_note": "Conditional commercial use under the pinned Stability AI Community License: registration required; annual revenue above USD 1 million requires a separate license. See https://huggingface.co/stabilityai/stable-code-instruct-3b/blob/20e21f0e817b72499c8585d86a139c0fd011adba/LICENSE.md",
+  "gpus": "0",
+  "ctx": "4096",
+  "vram_gib": 3.5,
+  "tools": false,
+  "env": {},
+  "defaults": {},
+  "files": {
+    "model": {
+      "key": "stable-code-instruct-3b-q4-weights",
+      "url": "https://huggingface.co/stabilityai/stable-code-instruct-3b/resolve/20e21f0e817b72499c8585d86a139c0fd011adba/stable-code-3b-q4_k_m.gguf",
+      "size": 1708595936,
+      "sha256": "31b41fd17357e3a10e0dd46334d0b81b0a6374454ac3d8a6fbf24a6980e1dbdd",
+      "path": "stablelm/stable-code-instruct-3b.Q4_K_M.gguf"
+    }
+  },
+  "commercial": true,
+  "guide": "guides/stablelm.md"
+}

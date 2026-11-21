@@ -1,0 +1,19 @@
+{
+  "scope": "host diagnostic only; original runtime frozen9bcd81e6, failure must reproduce bitwise",
+  "files": {
+    "kernels/vision/qwen3vl/int8_convrot.hpp": "e47a8704baa1b3e11e73ed21a5d46bcdd30359f2e534754c8bbf66cb8ada215c",
+    "kernels/vision/qwen3vl/qv.h": "c1b2cfb395a797c1f5d954b37941ba806f4fe764715617d74226dd384a89ac8b",
+    "kernels/vision/qwen3vl/qv.hip": "6476002b55a3743f0254b7439ba52f51aeae22d901c6e72ce257fae5dd765705",
+    "kernels/vision/qwen3vl/tests/rms_rope_numeric.cpp": "692ddb3c2f0a8cc21b1d431b8c142f2b0549c6f32fbe0ec4c2b7be6159014985",
+    "vision/qwen3vl/Cargo.lock": "1c7da18319e7c4ba8650d8567bd49af213253e90a2611490635487080ee7edc5",
+    "vision/qwen3vl/Cargo.toml": "73cde31b2d75c7de6e5f55cb7aa817595336aadbacdce36457987e05312dfe20",
+    "vision/qwen3vl/README.md": "7f99ec10d2c4586dcd5295ae44d04b1eab968b3f701d60d35c49e9d4a57da499",
+    "vision/qwen3vl/examples/encode.rs": "913bdfd64ad5e7e37756a85f4b2e5933db919165fd6b358e4607eba4b05a7e67",
+    "vision/qwen3vl/examples/tokenize.rs": "0a356524f81a01d2d41d916c94bccc8f9763660310e6a8afe31790469aabaddc",
+    "vision/qwen3vl/src/ffi.rs": "d9a89318032229215aded6dd670946c049265ad44517aadf9d92442ae11c5e14",
+    "vision/qwen3vl/src/lib.rs": "2e0d7464870b9b90d7207c3753c5eca8c52316406862df306bf57252101989e0",
+    "vision/qwen3vl/src/weights.rs": "dcb865b9b6b763b210499b6ffa7313ebcb9b1e851326b0861aa5965215652200",
+    "vision/qwen3vl/examples/trace_layer0.rs": "5a0b08359998726bea7bc1d5d11601c1de29d90d983bf2791955e7898c8b49b7"
+  },
+  "prior_failing_source_archive": "reference/qwenimage21-turbo/te-native-failed-v1/frozen-host-source.tar.gz"
+}

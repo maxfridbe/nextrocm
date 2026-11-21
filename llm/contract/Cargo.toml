@@ -1,0 +1,12 @@
+[package]
+name = "nextrocm-llm"
+description = "The contract between the server and the engines: the Engine trait, opaque sessions, samplers, the registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nextrocm-engine-core.workspace = true
+nextrocm-gguf.workspace = true
+nextrocm-tok.workspace = true
+serde_json.workspace = true

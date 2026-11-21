@@ -1,0 +1,39 @@
+# VibeVoice 1.5B (long-form multi-speaker speech: Speaker N: lines, each speaker cloned from a recording)
+# model card (model-cards/README.md): what `nextrocm models search | pull` offers and what the registry entry gets
+id: vibevoice-1.5b-q8
+kind: audio
+arch: vibevoice
+license: mit
+commercial: true
+title: 'VibeVoice 1.5B (long-form multi-speaker speech: a script of Speaker N: lines, each speaker cloned from a recording)'
+about: 'Microsoft''s VibeVoice 1.5B: a Qwen2.5-1.5B reading the script after the speakers'' recordings, a diffusion head for its 7.5 Hz acoustic latents, the acoustic and semantic tokenizers (24 kHz) - gguf-org''s Q8_0 GGUF of it, with language-model matrices dequantized to half, copied from development-host'
+gpus: '0'
+vram_gib: 6.5                   # conservative reservation; development-host fixture measurements in docs/validation.md
+speech:
+- clone
+- speakers
+defaults:
+  seconds: 600.0
+  steps: 10
+  cfg: 1.3
+env: {}
+files:
+  model:
+    key: vv-model-q8
+    url: https://huggingface.co/gguf-org/vibevoice-gguf/resolve/197bcd95c76e586b534b67524d667c1dc5efce34/vibevoice-1.5b-q8_0.gguf
+    size: 4191203040
+    sha256: f1b7fdf26e5bb75e0b29f9538999b724bd871561c73930780df91d6b68b95572
+    path: vibevoice-1.5b/vibevoice-1.5b-q8_0.gguf
+  config:
+    key: vv-config
+    url: https://huggingface.co/callgg/vibevoice-bf16/resolve/bb2a0896604ab1daa7bce8016ffe260f72e0a7a9/config.json
+    size: 2762
+    sha256: b0d6db52f45dd5179b42217c55112aa2ee66e7ad7b40b0950833c9f6780a0f21
+    path: vibevoice-1.5b/config.json
+  tokenizer:
+    key: vv-tokenizer
+    url: https://huggingface.co/Qwen/Qwen2.5-1.5B/resolve/8faed761d45a263340a0528343f099c05c9a4323/tokenizer.json
+    size: 7031645
+    sha256: c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539
+    path: vibevoice-1.5b/tokenizer.json
+guide: guides/vibevoice.md

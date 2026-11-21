@@ -1,0 +1,13 @@
+[package]
+name = "nextrocm-image-upscale"
+description = "Native HIP Real-ESRGAN x4plus engine"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+nextrocm-engine-core = { path = "../../crates/engine-core" }
+nextrocm-image = { path = "../contract" }
+
+[dev-dependencies]
+serde_json = "1"

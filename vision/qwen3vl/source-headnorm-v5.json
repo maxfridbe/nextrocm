@@ -1,0 +1,32 @@
+{
+  "scope": "Reviewed private default-off headnorm candidate; GPU/operator/fullTE pending",
+  "files": {
+    "kernels/ns/ns.h": "f5fb402b461f69a7946928988c79c6ce0efe0790c794b0ec6066eb577db17244",
+    "kernels/ns/ns.hip": "e40d6b19ffe89e3e351bb791c442a3dd148f29c31339289343fcc1a999fd77d2",
+    "kernels/ns/ns_internal.hpp": "cd22e1d582650e9ef724462d28444f3b3453f8e38d8db2b3f410f4fc22372a2c",
+    "kernels/ops/speech.hip": "05fa2020a4f8f5155f13755a50eae7ffb4a2fd90502675699eaccaf0c2b4fd32",
+    "kernels/vision/qwen3vl/attention_prob.hpp": "41448f371b3d3460b2bc2a596c16770bd32faadb9d317f657c9656844e801bd5",
+    "kernels/vision/qwen3vl/int8_convrot.hpp": "e47a8704baa1b3e11e73ed21a5d46bcdd30359f2e534754c8bbf66cb8ada215c",
+    "kernels/vision/qwen3vl/qv.h": "5a04296d8a8f363ea703256c258a7bcee0e16ad10675e31e4760fbe27d19260a",
+    "kernels/vision/qwen3vl/qv.hip": "833a4b30faf0f913d01a53bf16079c26e25eb267faa2f79ddb7cbd684f709281",
+    "kernels/vision/qwen3vl/rms_rope_ordered.hpp": "40265a10845aff4f63f0db98e9f673065acb6a8e201ff1408e6992376693bffb",
+    "kernels/vision/qwen3vl/tests/ATTENTION_PROB.md": "1ca45e573477f6354184e8d68fb4bb567d37cb592f4cf237350ded2a5728e6b4",
+    "kernels/vision/qwen3vl/tests/RMS_ROPE_ORDERED.md": "6932daae7020059807b1415e0b2579b873ef75f569c8b9c9f9a490fc601788ab",
+    "kernels/vision/qwen3vl/tests/attention_prob_numeric.cpp": "9ec0a9a8e624b4909f06a80c991eed5a55a6bd5066205fd1cb68c62b78e3201f",
+    "kernels/vision/qwen3vl/tests/rms_rope_numeric.cpp": "692ddb3c2f0a8cc21b1d431b8c142f2b0549c6f32fbe0ec4c2b7be6159014985",
+    "kernels/vision/qwen3vl/tests/rms_rope_ordered_numeric.cpp": "dfa3cde6b59bd768b1218b2d51650f4156af06d13585359e09691e9d15ce9833",
+    "kernels/vision/qwen3vl/tests/verify_ordered_fixtures.py": "d7053ab08a3aa014a228dde56c32075decada5ce0f3d77d7db48d61832e7beb0",
+    "vision/qwen3vl/Cargo.lock": "1c7da18319e7c4ba8650d8567bd49af213253e90a2611490635487080ee7edc5",
+    "vision/qwen3vl/Cargo.toml": "73cde31b2d75c7de6e5f55cb7aa817595336aadbacdce36457987e05312dfe20",
+    "vision/qwen3vl/README.md": "1fe792d3cf771e89fd28101815c1b27ac1409389b77ffba663fb73c1acffcbd3",
+    "vision/qwen3vl/examples/encode.rs": "035666d8ec03aa80ab45464124039c734a6b64a4416a9c1f386d5be26b96f8c8",
+    "vision/qwen3vl/examples/tokenize.rs": "0a356524f81a01d2d41d916c94bccc8f9763660310e6a8afe31790469aabaddc",
+    "vision/qwen3vl/examples/trace_block1.rs": "5be4ab16157420bafcc4d858086eeb8580a61de1786d82880e994de8fa75f839",
+    "vision/qwen3vl/examples/trace_layer0.rs": "5a0b08359998726bea7bc1d5d11601c1de29d90d983bf2791955e7898c8b49b7",
+    "vision/qwen3vl/src/ffi.rs": "3b910fc3aafe62db8f84600aae58b2b98932499f47cdcb4c68fad2306342eb28",
+    "vision/qwen3vl/src/lib.rs": "f62aa0d9ed6e6334f2fdfe3b9aab1885fa32d99b4a9e62d8e4d9587b6d2f4f02",
+    "vision/qwen3vl/src/weights.rs": "dcb865b9b6b763b210499b6ffa7313ebcb9b1e851326b0861aa5965215652200"
+  },
+  "prior_manifest_sha256": "463091b50287ee5e5ea2b94d24931ec7760923010c96acd76f16e2e9f83f9ec4",
+  "fixture_manifest_sha256": "0e9fb4ccc821179e8154405bd803fcad206af211d025c7fa110a45723b82aba0"
+}

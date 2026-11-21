@@ -1,0 +1,41 @@
+[package]
+name = "nextrocm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "GPL-3.0-only" # Linking the isolated GPL RigNet engine makes this binary GPLv3.
+[features]
+default = ["starvector-experimental"]
+starvector-experimental = ["dep:nextrocm-image-starvector"]
+
+[dependencies]
+nextrocm-image-qwenimage21.workspace = true
+nextrocm-image-starvector = { workspace = true, optional = true, features = ["vision-f32"] }
+nextrocm-model3d.workspace = true
+nextrocm-model3d-rignet.workspace = true
+nextrocm-audio-voxcpm2.workspace = true
+nextrocm-image-sd15.workspace = true
+nextrocm-llm-qwen3moe.workspace = true
+nextrocm-llm-qwen35.workspace = true
+nextrocm-llm-inkling2.workspace = true
+nextrocm-image.workspace = true
+nextrocm-llm.workspace = true
+nextrocm-gguf.workspace = true
+nextrocm-tok.workspace = true
+nextrocm-image-upscale.workspace = true
+nextrocm-image-rembg.workspace = true
+nextrocm-llm-stablelm.workspace = true
+nextrocm-audio-lowvram.workspace = true
+nextrocm-core = { path = "../../crates/core" }
+serde_json.workspace = true
+nextrocm-engine-core.workspace = true
+nextrocm-audio.workspace = true
+nextrocm-audio-whisper.workspace = true
+nextrocm-ops.workspace = true
+nextrocm-audio-qwen3tts.workspace = true
+
+nextrocm-models.workspace = true
+nextrocm-serve.workspace = true
+nextrocm-sys.workspace = true
+
+nextrocm-audio-vibevoice.workspace = true

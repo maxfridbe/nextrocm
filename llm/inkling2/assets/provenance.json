@@ -1,0 +1,7 @@
+{
+  "repo": "thinkingmachines/Inkling-2-Mini",
+  "revision": "ed40e7da625f594fc9c4990f5f66be24873c22d7",
+  "path": "config.json",
+  "sha256": "a7a349601f0984c4abf999c480ef775d8567d21f5f84b4e8a3e035b44f288dc2",
+  "purpose": "Embedded authoritative model architecture configuration; not an inference oracle or fixture output."
+}

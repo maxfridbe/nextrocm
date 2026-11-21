@@ -1,0 +1,30 @@
+{
+  "repository": "starvector/starvector-1b-im2svg",
+  "revision": "380ab95d25a8e9ab1dc825debe238b4953ae13b9",
+  "source_card_commit": "5733ec695f53eede3700d43678228bd693f582c6",
+  "files": [
+    {
+      "role": "model",
+      "name": "model-00001-of-00002.safetensors",
+      "url": "https://huggingface.co/starvector/starvector-1b-im2svg/resolve/380ab95d25a8e9ab1dc825debe238b4953ae13b9/model-00001-of-00002.safetensors",
+      "bytes": 4995740600,
+      "sha256": "bea3a2add4a0107ae405391eaaefd7b95339d33b1ad98ed87862716ebdc02c20"
+    },
+    {
+      "role": "model_2",
+      "name": "model-00002-of-00002.safetensors",
+      "url": "https://huggingface.co/starvector/starvector-1b-im2svg/resolve/380ab95d25a8e9ab1dc825debe238b4953ae13b9/model-00002-of-00002.safetensors",
+      "bytes": 146964720,
+      "sha256": "c71c1a94c42a1408f4a75e519814f10005061a0a81a3c87f0f136d475fa916b6"
+    },
+    {
+      "role": "tokenizer",
+      "name": "tokenizer.json",
+      "url": "https://huggingface.co/starvector/starvector-1b-im2svg/resolve/380ab95d25a8e9ab1dc825debe238b4953ae13b9/tokenizer.json",
+      "bytes": 3475977,
+      "sha256": "677ed0fa17c754ab4bdd575102360f7e508051c88d4eb1c73bec0643077248a2"
+    }
+  ],
+  "total_bytes": 5146181297,
+  "status": "not downloaded or admitted"
+}

@@ -1,0 +1,16 @@
+**/target/
+/dist/
+/runtime-build/
+**/node_modules/
+**/__pycache__/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.gguf
+*.safetensors
+*.log
+*.so
+*.o
+*.a

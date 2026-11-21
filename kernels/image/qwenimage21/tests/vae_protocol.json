@@ -1,0 +1,13 @@
+{
+  "status": "prospective frozen before GPU; CPU strict build/selftest PASS",
+  "files": {
+    "kernels/image/qwenimage21/vae.h": "85cb3377e11e579336cfb9da3e079a9641feabe3dcc8bb6947e2589a2f2524b9",
+    "kernels/image/qwenimage21/vae.hpp": "b7590d93f551d5503b9fa37e5b0652742c155833023dd876ae06017575cef957",
+    "kernels/image/qwenimage21/vae.hip": "64c026b7ab3b2257261e503bd799fed1f7bc45861c73e4909b91a32fd8229a14",
+    "kernels/image/qwenimage21/tests/vae_numeric.cpp": "66c84d58e498c82e9431876ec7a020429362c937d11156a2550d8f5147ad28f9"
+  },
+  "arithmetic_gate": "Allfinite fullshape per-element abs(actualF16 - F64reference roundedF16) <= max adjacent half spacing +2e-5 for convolution,SiLU,softmax. Reportmaxabs/globalL2/maxULP.",
+  "exact_gate": "up2,pad,duplicate-upshortcut,average-downshortcut andRGBA bytes exact against independent CPU layout/materialization oracle on bounded dyadic fixtures. Inputimmutability/allocationguards/invalid-callpreservation mandatory.",
+  "conv_semantics": "NHWC F16/OIHW F16 ->F16, F32FMA accumulation plusF32bias, no globalim2col; 16x16LDS tiles reused fromSD15methodology withprivatehalf/NHWC implementation; stride1same,k1/3 andstride2valid,k3",
+  "model_gate": "Separate existing NUMERICAL_PROTOCOL.md fullrawRGBAF32 relativeL2<=1e-3, allfinite exactshape; unchanged. Operator pass alone does not establish modelpass or memoryfit."
+}

@@ -1,0 +1,20 @@
+{
+  "revision": "5733ec695f53eede3700d43678228bd693f582c6",
+  "root": "/home/developer/Dev/development-host/nextcuda",
+  "license": "GPL-3.0-only",
+  "files": {
+    "model3d/rignet/Cargo.toml": "364cdee18e7dffa400c90c7f5a1a144df4fe862886c21dd7ad2b87c8eb737a5e",
+    "model3d/rignet/src/check.rs": "0c0d5e238391b92a6827833868787b98a99682ce427f1dda3d117a4c1449bf69",
+    "model3d/rignet/src/ffi.rs": "765556028d71f624bf1beba2be9eed621df00a43392d580e2094bb0b408f09d5",
+    "model3d/rignet/src/geom.rs": "588ef068fd780943dce9417613005c5d1c0990970ba3f82238ba49676f20a5ec",
+    "model3d/rignet/src/net.rs": "a628267bd6c045be472ca6ae3cc15854f2a0b4615441d3e1e4f8ce914fe4d655",
+    "model3d/rignet/src/npy.rs": "90145849c0588a21ac90c02ac52d1fc3c3a68addfbca5b12aeab53c36c0f4d20",
+    "model3d/rignet/src/pointnet.rs": "d2a301553035771e7a88d73355d6a61124c75aa413986ea468e1977481d7b4dc",
+    "model3d/rignet/src/skel.rs": "51d5ba90d520a67e6ba70d991d75242567af69969eca80c109d822ffa3da87a3",
+    "model3d/rignet/src/zip.rs": "e80b6e308d35c3fbba04c499549e3b578254f99a30d73869a75485c96bc90e87",
+    "model3d/rignet/src/lib.rs": "1a29ae51410ddbf4bb419c91cfbd16f0c7c80694c1f61786a0e79d84d729c5f7",
+    "kernels/model3d/rignet/rignet.cu": "bfc0cbf9e919d4c28ccdb93422952e9daf6e498d3eb9b579afff2dbdf302045b",
+    "kernels/model3d/rignet/rignet.h": "5d2127f7d4ea7c04f4c7150d3e410348018cd54a721433ee221ed3ee756e8162",
+    "cli/nextcuda/src/model3d.rs": "490126bce425b664ad9b198e3cebe43596bf835bb4e81f89bb72f37f9d33ce06"
+  }
+}

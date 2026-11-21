@@ -1,0 +1,16 @@
+[package]
+name = "nextrocm-image-rembg"
+description = "Native HIP IS-Net and BiRefNet background removal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nextrocm-engine-core.workspace = true
+nextrocm-image.workspace = true
+nextrocm-ops.workspace = true
+nextrocm-remover = { path = "../../crates/remover" }
+
+[dev-dependencies]
+serde_json.workspace = true
+sha2 = "0.10"

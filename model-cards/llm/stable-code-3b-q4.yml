@@ -1,0 +1,25 @@
+{
+  "id": "stable-code-3b-q4",
+  "kind": "llm",
+  "arch": "stablelm",
+  "title": "Stable Code 3B Q4_K_M (code completion)",
+  "license": "stabilityai-community",
+  "license_note": "Conditional commercial use under the pinned Stability AI Community License: registration required; annual revenue above USD 1 million requires a separate license. See https://huggingface.co/stabilityai/stable-code-3b/blob/5cee3fa2905e7a03c4a1b0bc02f39da7ceaa6cb5/LICENSE.md",
+  "gpus": "0",
+  "ctx": "4096",
+  "vram_gib": 3.5,
+  "tools": false,
+  "env": {},
+  "defaults": {},
+  "files": {
+    "model": {
+      "key": "stable-code-3b-q4-weights",
+      "url": "https://huggingface.co/TheBloke/stable-code-3b-GGUF/resolve/53430e2b42177f12f2fe8c844cd47211756ca072/stable-code-3b.Q4_K_M.gguf",
+      "size": 1708595200,
+      "sha256": "ee19af8605fcb7a73c5d68f43f734df4cc30409962347158299e939cb51e233c",
+      "path": "stablelm/stable-code-3b.Q4_K_M.gguf"
+    }
+  },
+  "commercial": true,
+  "guide": "guides/stablelm.md"
+}

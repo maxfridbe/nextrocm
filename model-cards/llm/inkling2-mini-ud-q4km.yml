@@ -1,0 +1,25 @@
+{
+  "id": "inkling2-mini-ud-q4km",
+  "kind": "llm",
+  "arch": "inkling2",
+  "title": "Inkling 2 Mini UD-Q4_K_M (text only)",
+  "license": "apache-2.0",
+  "commercial": true,
+  "license_note": "Apache 2.0; pinned quantized model: https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/blob/ae9327c5fbc7333116ba32eee78bb5d2bbefae4f/README.md",
+  "gpus": "0",
+  "ctx": "4096",
+  "vram_gib": 5.0,
+  "tools": false,
+  "guide": "guides/inkling2.md",
+  "env": {"NS_PARALLEL": "1"},
+  "defaults": {},
+  "files": {
+    "model": {
+      "key": "inkling2-mini-ud-q4km-weights",
+      "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/ae9327c5fbc7333116ba32eee78bb5d2bbefae4f/Inkling-2-Mini-UD-Q4_K_M.gguf",
+      "size": 16610543328,
+      "sha256": "f90c5a4df44d335ac9f9eea2a15c31d6c5a377b1b3cd9ff7fc2cf123f3cdf7e1",
+      "path": "inkling-2-mini/Inkling-2-Mini-UD-Q4_K_M.gguf"
+    }
+  }
+}

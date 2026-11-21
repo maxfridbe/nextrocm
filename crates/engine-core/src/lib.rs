@@ -1,0 +1,831 @@
+//! The safe layer over `libnextrocm-<kind>.so` (kernels/ns: CUDA behind nextsycl's ns.h ABI): GPUs, device and pinned
+//! host buffers that free themselves, copies with their sizes checked. Everything the kernels run on comes from here.
+//!
+//! Without the library (the phase 1 python engine needs no kernels of ours) the GPUs are read with `nvidia-smi` and a
+//! `DevBuf` is plain host memory with the same methods: the contracts and the glue behave as they did, and nothing in
+//! them needs to know which GPU runtime is behind an engine.
+
+use std::alloc::{alloc_zeroed, dealloc, Layout};
+use std::ffi::{c_char, c_void};
+use std::process::Command;
+use std::sync::{Arc, OnceLock};
+
+pub mod options;
+
+pub use nextrocm_sys::Api;
+pub use options::{At, EngineOption};
+
+#[derive(Debug)]
+pub struct Error(pub String);
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for Error {}
+
+impl From<&str> for Error {
+    fn from(s: &str) -> Error {
+        Error(s.into())
+    }
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
+static KIND: OnceLock<&'static str> = OnceLock::new();
+
+/// The kind whose kernel library this process uses ("image", "llm", "video", "audio"; `libnextrocm-<kind>.so`), set
+/// before the first GPU call - a process runs one kind. The default is "image". False when it was chosen already.
+pub fn use_kind(kind: &'static str) -> bool {
+    KIND.set(kind).is_ok() && API.get().is_none()
+}
+
+/// The kernel library, loaded once: the kind's (`use_kind`), or `NEXTROCM_LIB`. None when there is none.
+fn lib() -> Option<&'static Api> {
+    API.get_or_init(|| Api::load("runtime")).as_ref().ok()
+}
+
+/// The kernel library, or why it did not load
+pub fn api() -> Result<&'static Api> {
+    API.get_or_init(|| Api::load("runtime"))
+        .as_ref()
+        .map_err(|e| Error(e.clone()))
+}
+
+/// A model's silo (`kernels/<kind>/<arch>/silo/`: its tuned kernels, `dist/silo/libnextrocm-<arch>.so`), opened on
+/// the first ask and kept: None when there is none (or NS_SILO=0) - the engine then uses the shared kernels
+pub fn silo(arch: &str) -> Result<Option<&'static nextrocm_sys::Silo>> {
+    silo_for(arch, 0)
+}
+
+/// A model's silo for a card: the one built for its compute capability (`cc`: Gpu::cc) when the silo is built a card
+/// at a time, else the one for every card - two cards of two kinds run two silos side by side
+pub fn silo_for(arch: &str, cc: u32) -> Result<Option<&'static nextrocm_sys::Silo>> {
+    static SILOS: std::sync::Mutex<Vec<(String, u32, Option<&'static nextrocm_sys::Silo>)>> =
+        std::sync::Mutex::new(Vec::new());
+    let mut m = SILOS.lock().unwrap();
+    if let Some((_, _, s)) = m.iter().find(|(a, c, _)| a == arch && *c == cc) {
+        return Ok(*s);
+    }
+    let s = api()?
+        .silo_for(arch, cc)
+        .map_err(Error)?
+        .map(|s| &*Box::leak(Box::new(s)));
+    m.push((arch.to_string(), cc, s));
+    Ok(s)
+}
+
+fn check(api: &Api, rc: i32, what: &str) -> Result<()> {
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(Error(format!("{what}: {}", api.error())))
+    }
+}
+
+/// One row of `nvidia-smi`: (index, name, pci bus id, total MiB, free MiB)
+type Row = (usize, String, String, u64, u64);
+
+fn smi() -> Result<Vec<Row>> {
+    let out = Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=index,name,pci.bus_id,memory.total,memory.free",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .map_err(|e| Error(format!("listing the GPUs: nvidia-smi: {e}")))?;
+    if !out.status.success() {
+        return Err(Error(format!(
+            "listing the GPUs: nvidia-smi: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let mut rows = Vec::new();
+    for l in String::from_utf8_lossy(&out.stdout).lines() {
+        let f: Vec<&str> = l.split(',').map(str::trim).collect();
+        if f.len() < 5 {
+            continue;
+        }
+        let n = |s: &str| s.parse::<u64>().unwrap_or(0);
+        // nvidia-smi writes the bus id as 00000000:01:00.0; sysfs wants 0000:01:00.0
+        let pci = f[2].to_lowercase();
+        let pci = pci
+            .strip_prefix("0000")
+            .filter(|_| pci.len() > 12)
+            .map(str::to_string)
+            .unwrap_or(pci);
+        rows.push((n(f[0]) as usize, f[1].to_string(), pci, n(f[3]), n(f[4])));
+    }
+    Ok(rows)
+}
+
+/// The GPUs: (index, name).
+pub fn gpus() -> Result<Vec<(usize, String)>> {
+    if let Some(a) = lib() {
+        // SAFETY: no arguments.
+        let n = unsafe { (a.gpu_count)() };
+        if n < 0 {
+            return Err(Error(format!("listing the GPUs: {}", a.error())));
+        }
+        return (0..n)
+            .map(|i| {
+                let mut buf = [0 as c_char; 256];
+                // SAFETY: buf is 256 bytes, its length passed.
+                check(
+                    a,
+                    unsafe { (a.gpu_name)(i, buf.as_mut_ptr(), buf.len()) },
+                    "the GPU's name",
+                )?;
+                // SAFETY: the library wrote a NUL-terminated string into buf.
+                Ok((
+                    i as usize,
+                    unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+                        .to_string_lossy()
+                        .into_owned(),
+                ))
+            })
+            .collect();
+    }
+    Ok(smi()?.into_iter().map(|r| (r.0, r.1)).collect())
+}
+
+/// GPU `index`'s compute units and clock. The driver gives neither through nvidia-smi's plain query; (0, 0) = unknown.
+pub fn gpu_units(index: usize) -> Result<(u32, u32)> {
+    let Some(a) = lib() else { return Ok((0, 0)) };
+    let (mut u, mut m) = (0, 0);
+    // SAFETY: out-pointers to locals.
+    check(
+        a,
+        unsafe { (a.gpu_units)(index as i32, &mut u, &mut m) },
+        "the GPU's compute units",
+    )?;
+    Ok((u as u32, m as u32))
+}
+
+/// Every GPU's index, the one with the most memory last; ties keep the driver's order.
+pub fn gpus_weakest_first() -> Result<Vec<usize>> {
+    let mut v: Vec<(usize, u64)> = smi()?.into_iter().map(|r| (r.0, r.3)).collect();
+    v.sort_by_key(|x| x.1);
+    Ok(v.into_iter().map(|x| x.0).collect())
+}
+
+/// GPU `index`'s PCIe link as nvidia-smi gives it: "gen4 x16 (max gen4 x16)". The link drops a generation when the
+/// card is idle (power saving): read it under load for what a copy gets.
+pub fn pcie_link(index: usize) -> Option<String> {
+    let out = Command::new("nvidia-smi")
+        .args(["--query-gpu=index,pcie.link.gen.current,pcie.link.width.current,pcie.link.gen.max,pcie.link.width.max", "--format=csv,noheader,nounits"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).lines().find_map(|l| {
+        let f: Vec<&str> = l.split(',').map(str::trim).collect();
+        (f.len() >= 5 && f[0].parse::<usize>().ok() == Some(index))
+            .then(|| format!("gen{} x{} (max gen{} x{})", f[1], f[2], f[3], f[4]))
+    })
+}
+
+/// One GPU.
+pub struct Gpu {
+    /// the kernel library and this GPU's handle in it; None: no library (host memory, nvidia-smi)
+    dev: Option<(&'static Api, nextrocm_sys::Gpu)>,
+    pub index: usize,
+    pub name: String,
+    /// its PCI address ("0000:03:00.0"), where its sensors are (sysfs hwmon)
+    pub pci: Option<String>,
+    /// its compute capability as one number (86: an RTX 3060, 120: an RTX 5070); 0 without the library
+    pub cc: u32,
+}
+
+// SAFETY: the library's GPU handle is a context and streams; CUDA's are thread-safe.
+unsafe impl Send for Gpu {}
+unsafe impl Sync for Gpu {}
+
+impl Drop for Gpu {
+    fn drop(&mut self) {
+        if let Some((api, raw)) = self.dev {
+            // SAFETY: the handle came from gpu_open; buffers keep an Arc<Gpu>, so none outlives it.
+            unsafe {
+                let _ = (api.sync)(raw);
+                (api.gpu_close)(raw)
+            }
+        }
+    }
+}
+
+impl Gpu {
+    pub fn open(index: usize) -> Result<Arc<Gpu>> {
+        api()?; // A speech engine must never fall back to host memory.
+        if let Some(api) = lib() {
+            let name = gpus()?
+                .into_iter()
+                .find(|g| g.0 == index)
+                .map(|g| g.1)
+                .ok_or_else(|| Error(format!("no GPU {index}")))?;
+            let mut raw: nextrocm_sys::Gpu = std::ptr::null_mut();
+            // SAFETY: an out-pointer to a local.
+            check(
+                api,
+                unsafe { (api.gpu_open)(index as i32, &mut raw) },
+                &format!("opening GPU {index}"),
+            )?;
+            let mut pb = [0 as c_char; 64];
+            // SAFETY: pb is 64 bytes, its length passed; the library NUL-terminates.
+            let pci = (unsafe { (api.gpu_pci)(index as i32, pb.as_mut_ptr(), pb.len()) } == 0)
+                .then(|| {
+                    unsafe { std::ffi::CStr::from_ptr(pb.as_ptr()) }
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .filter(|s| !s.is_empty());
+            let mut cc: std::ffi::c_int = 0;
+            // SAFETY: an out-pointer to a local.
+            check(
+                api,
+                unsafe { (api.gpu_cc)(index as i32, &mut cc) },
+                &format!("GPU {index}'s compute capability"),
+            )?;
+            return Ok(Arc::new(Gpu {
+                dev: Some((api, raw)),
+                index,
+                name,
+                pci,
+                cc: cc as u32,
+            }));
+        }
+        let r = smi()?
+            .into_iter()
+            .find(|r| r.0 == index)
+            .ok_or_else(|| Error(format!("no GPU {index}")))?;
+        Ok(Arc::new(Gpu {
+            dev: None,
+            index,
+            name: r.1,
+            pci: Some(r.2).filter(|s| !s.is_empty()),
+            cc: 0,
+        }))
+    }
+
+    /// A GPU with no device behind it (no library, no sensors): what a server's tests run a fake engine on
+    pub fn detached(name: &str) -> Arc<Gpu> {
+        Arc::new(Gpu {
+            dev: None,
+            index: 0,
+            name: name.into(),
+            pci: None,
+            cc: 0,
+        })
+    }
+
+    /// The library's handle of this GPU (`ns_gpu*`), for an engine's own ABI; null without the library
+    pub fn raw(&self) -> *mut c_void {
+        self.dev.map_or(std::ptr::null_mut(), |d| d.1)
+    }
+
+    /// The stream, for a kernel launch (the pointer is a cudaStream_t)
+    pub fn queue(&self) -> *mut c_void {
+        // SAFETY: a live handle.
+        self.dev
+            .map_or(std::ptr::null_mut(), |(a, r)| unsafe { (a.gpu_queue)(r) })
+    }
+
+    /// (total bytes, free bytes)
+    pub fn memory(&self) -> Result<(u64, Option<u64>)> {
+        if let Some((a, r)) = self.dev {
+            let (mut t, mut f) = (0u64, 0i64);
+            // SAFETY: out-pointers to locals.
+            check(
+                a,
+                unsafe { (a.gpu_memory)(r, &mut t, &mut f) },
+                "the GPU's memory",
+            )?;
+            return Ok((t, (f >= 0).then_some(f as u64)));
+        }
+        let r = smi()?
+            .into_iter()
+            .find(|r| r.0 == self.index)
+            .ok_or_else(|| Error(format!("no GPU {}", self.index)))?;
+        Ok((r.3 << 20, Some(r.4 << 20)))
+    }
+
+    /// A ticket for the work queued on the GPU so far (None without a device)
+    pub fn ticket(&self) -> Result<Option<i64>> {
+        match self.dev {
+            Some((a, r)) => {
+                let mut t = 0i64;
+                // SAFETY: a live handle, an out-pointer to a local.
+                check(a, unsafe { (a.mark)(r, &mut t) }, "marking the GPU's queue")?;
+                Ok(Some(t))
+            }
+            None => Ok(None),
+        }
+    }
+    /// `f`'s work on the GPU's stream recorded and launched as one graph (ns_capture_*): None without a device or when
+    /// the capture fails (the work dropped - `f` is then run again by the caller, uncaptured)
+    pub fn graph<T>(
+        &self,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<std::result::Result<T, String>> {
+        let Some((a, r)) = self.dev else {
+            return Ok(f().map_err(|e| e.0));
+        };
+        // SAFETY: a live handle.
+        check(a, unsafe { (a.capture_begin)(r) }, "starting a capture")?;
+        match f() {
+            // SAFETY: a live handle, capturing.
+            Ok(v) => match check(a, unsafe { (a.capture_launch)(r) }, "launching a graph") {
+                Ok(()) => Ok(Ok(v)),
+                Err(e) => {
+                    // SAFETY: a live handle.
+                    unsafe { (a.capture_abort)(r) };
+                    Ok(Err(e.0))
+                }
+            },
+            Err(e) => {
+                // SAFETY: a live handle.
+                unsafe { (a.capture_abort)(r) };
+                Ok(Err(e.0))
+            }
+        }
+    }
+    /// The host waits for the work before `ticket`
+    pub fn wait_ticket(&self, ticket: i64) -> Result<()> {
+        match self.dev {
+            // SAFETY: a live handle.
+            Some((a, r)) => check(
+                a,
+                unsafe { (a.ticket_wait)(r, ticket) },
+                "waiting for the GPU",
+            ),
+            None => Ok(()),
+        }
+    }
+    pub fn sync(&self) -> Result<()> {
+        match self.dev {
+            // SAFETY: a live handle.
+            Some((a, r)) => check(a, unsafe { (a.sync)(r) }, "waiting for the GPU"),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A buffer the contracts pass around. Host memory, 64-byte aligned.
+pub struct DevBuf {
+    gpu: Arc<Gpu>,
+    ptr: *mut c_void,
+    pub len: usize,
+    /// false for a view: the owner frees the memory
+    owned: bool,
+}
+
+// SAFETY: plain memory, accessed through &self by callers that keep their own order.
+unsafe impl Send for DevBuf {}
+unsafe impl Sync for DevBuf {}
+
+fn layout(len: usize) -> Layout {
+    Layout::from_size_align(len.max(1), 64).expect("a buffer layout")
+}
+
+impl Drop for DevBuf {
+    fn drop(&mut self) {
+        if self.owned {
+            match self.gpu.dev {
+                // SAFETY: allocated by this GPU; the stream is in order, so work queued on it runs first.
+                Some((a, r)) => unsafe {
+                    (a.free)(r, self.ptr);
+                },
+                // SAFETY: allocated in `new` with this layout.
+                None => unsafe { dealloc(self.ptr.cast(), layout(self.len)) },
+            }
+        }
+    }
+}
+
+impl DevBuf {
+    pub fn new(gpu: &Arc<Gpu>, len: usize) -> Result<DevBuf> {
+        if let Some((a, r)) = gpu.dev {
+            let mut ptr = std::ptr::null_mut();
+            // SAFETY: an out-pointer to a local.
+            check(
+                a,
+                unsafe { (a.alloc)(r, len.max(1), &mut ptr) },
+                &format!("allocating {len} bytes on {}", gpu.name),
+            )?;
+            return Ok(DevBuf {
+                gpu: gpu.clone(),
+                ptr,
+                len,
+                owned: true,
+            });
+        }
+        // SAFETY: a non-zero layout.
+        let ptr = unsafe { alloc_zeroed(layout(len)) };
+        if ptr.is_null() {
+            return Err(Error(format!("allocating {len} bytes")));
+        }
+        Ok(DevBuf {
+            gpu: gpu.clone(),
+            ptr: ptr.cast(),
+            len,
+            owned: true,
+        })
+    }
+    pub fn ptr(&self) -> *mut c_void {
+        self.ptr
+    }
+    pub fn gpu(&self) -> &Arc<Gpu> {
+        &self.gpu
+    }
+    pub fn write(&self, at: usize, src: &[u8]) -> Result<()> {
+        self.bounds(at, src.len())?;
+        if let Some((a, r)) = self.gpu.dev {
+            // SAFETY: in bounds (checked); synced before `src` can go.
+            check(
+                a,
+                unsafe {
+                    (a.copy_to)(
+                        r,
+                        self.ptr.cast::<u8>().add(at).cast(),
+                        src.as_ptr().cast(),
+                        src.len(),
+                    )
+                },
+                "copying to the GPU",
+            )?;
+            return self.gpu.sync();
+        }
+        // SAFETY: in bounds (checked).
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.as_ptr(), self.ptr.cast::<u8>().add(at), src.len())
+        };
+        Ok(())
+    }
+    pub fn write_async(&self, at: usize, src: &[u8]) -> Result<()> {
+        // a pageable source is staged by the driver before the call returns: no ring needed
+        self.write(at, src)
+    }
+    pub fn read(&self, at: usize, dst: &mut [u8]) -> Result<()> {
+        self.bounds(at, dst.len())?;
+        if let Some((a, r)) = self.gpu.dev {
+            // SAFETY: in bounds (checked); synced before returning.
+            check(
+                a,
+                unsafe {
+                    (a.copy_from)(
+                        r,
+                        dst.as_mut_ptr().cast(),
+                        self.ptr.cast::<u8>().add(at).cast(),
+                        dst.len(),
+                    )
+                },
+                "copying from the GPU",
+            )?;
+            return self.gpu.sync();
+        }
+        // SAFETY: in bounds (checked).
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.ptr.cast::<u8>().add(at),
+                dst.as_mut_ptr(),
+                dst.len(),
+            )
+        };
+        Ok(())
+    }
+    pub fn fill(&self, v: u8) -> Result<()> {
+        if let Some((a, r)) = self.gpu.dev {
+            // SAFETY: the whole buffer.
+            return check(a, unsafe { (a.fill)(r, self.ptr, v, self.len) }, "filling");
+        }
+        // SAFETY: the whole buffer.
+        unsafe { std::ptr::write_bytes(self.ptr.cast::<u8>(), v, self.len) };
+        Ok(())
+    }
+    /// `[at, at + n)` inside this buffer, or an error
+    pub fn bounds(&self, at: usize, n: usize) -> Result<()> {
+        if at.checked_add(n).is_none_or(|e| e > self.len) {
+            return Err(Error(format!(
+                "bytes {at}..{} of a {}-byte buffer",
+                at.saturating_add(n),
+                self.len
+            )));
+        }
+        Ok(())
+    }
+    /// All of `src` into the front of this buffer (the staging area is not needed here).
+    pub fn copy_from_peer(&self, src: &DevBuf, staging: &mut [u8]) -> Result<()> {
+        self.bounds(0, src.len)?;
+        if let (Some((a, to)), Some((_, from))) = (self.gpu.dev, src.gpu.dev) {
+            if staging.len() < src.len {
+                return Err(Error(format!(
+                    "a staging area of {} bytes for {}",
+                    staging.len(),
+                    src.len
+                )));
+            }
+            // SAFETY: both buffers live, sizes checked; the call waits for both copies.
+            return check(
+                a,
+                unsafe {
+                    (a.copy_peer)(
+                        to,
+                        self.ptr,
+                        from,
+                        src.ptr,
+                        src.len,
+                        staging.as_mut_ptr().cast(),
+                    )
+                },
+                "copying between GPUs",
+            );
+        }
+        // SAFETY: both in bounds; distinct allocations.
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.ptr.cast::<u8>(), self.ptr.cast::<u8>(), src.len)
+        };
+        Ok(())
+    }
+    /// As `copy_from_peer` through pinned staging, ordered on the GPUs only (ns_copy_peer_async): the host goes on,
+    /// both GPUs' later work is ordered after it. The staging stays alive while the copy can be in flight (the owner's)
+    pub fn copy_from_peer_async(&self, src: &DevBuf, staging: &mut HostBuf) -> Result<()> {
+        self.bounds(0, src.len)?;
+        if let (Some((a, to)), Some((_, from))) = (self.gpu.dev, src.gpu.dev) {
+            if staging.len < src.len || staging.pin.is_none() {
+                return Err(Error(format!(
+                    "a pinned staging area of {} bytes for {}",
+                    staging.len, src.len
+                )));
+            }
+            let st = staging.base();
+            // SAFETY: both buffers live, sizes checked; the staging pinned and kept by the caller.
+            return check(
+                a,
+                unsafe { (a.copy_peer_async)(to, self.ptr, from, src.ptr, src.len, st.cast()) },
+                "copying between GPUs",
+            );
+        }
+        // SAFETY: both in bounds; distinct allocations.
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.ptr.cast::<u8>(), self.ptr.cast::<u8>(), src.len)
+        };
+        Ok(())
+    }
+    pub fn f32(gpu: &Arc<Gpu>, n: usize) -> Result<DevBuf> {
+        DevBuf::new(gpu, n * 4)
+    }
+    pub fn from_f32(gpu: &Arc<Gpu>, v: &[f32]) -> Result<DevBuf> {
+        let b = DevBuf::f32(gpu, v.len())?;
+        // SAFETY: plain floats as bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), v.len() * 4) };
+        b.write(0, bytes)?;
+        Ok(b)
+    }
+    pub fn floats(&self) -> usize {
+        self.len / 4
+    }
+    pub fn fp(&self) -> *mut f32 {
+        self.ptr.cast()
+    }
+    pub fn to_f32(&self) -> Result<Vec<f32>> {
+        let mut v = vec![0f32; self.floats()];
+        // SAFETY: v is floats() floats, viewed as their bytes.
+        let bytes =
+            unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr().cast::<u8>(), v.len() * 4) };
+        self.read(0, bytes)?;
+        Ok(v)
+    }
+    pub fn copy_within(&self, at: usize, src: &DevBuf, src_at: usize, n: usize) -> Result<()> {
+        self.bounds(at, n)?;
+        src.bounds(src_at, n)?;
+        if let Some((a, r)) = self.gpu.dev {
+            // SAFETY: both ranges in bounds (checked), same GPU.
+            return check(
+                a,
+                unsafe {
+                    (a.copy_dev)(
+                        r,
+                        self.ptr.cast::<u8>().add(at).cast(),
+                        src.ptr.cast::<u8>().add(src_at).cast(),
+                        n,
+                    )
+                },
+                "copying on the GPU",
+            );
+        }
+        // SAFETY: both ranges in bounds; `copy` allows overlap.
+        unsafe {
+            std::ptr::copy(
+                src.ptr.cast::<u8>().add(src_at),
+                self.ptr.cast::<u8>().add(at),
+                n,
+            )
+        };
+        Ok(())
+    }
+    /// `height` rows of `width` bytes from `src` (at `src_at`, rows `src_pitch` apart) into this buffer (at `at`, rows
+    /// `dst_pitch` apart): a block of columns into a wider matrix, queued like any copy
+    #[allow(clippy::too_many_arguments)]
+    pub fn copy_2d(
+        &self,
+        at: usize,
+        dst_pitch: usize,
+        src: &DevBuf,
+        src_at: usize,
+        src_pitch: usize,
+        width: usize,
+        height: usize,
+    ) -> Result<()> {
+        if height == 0 || width == 0 {
+            return Ok(());
+        }
+        self.bounds(at, (height - 1) * dst_pitch + width)?;
+        src.bounds(src_at, (height - 1) * src_pitch + width)?;
+        if let Some((a, r)) = self.gpu.dev {
+            // SAFETY: both ranges in bounds (checked), same GPU.
+            return check(
+                a,
+                unsafe {
+                    (a.copy_2d)(
+                        r,
+                        self.ptr.cast::<u8>().add(at).cast(),
+                        dst_pitch,
+                        src.ptr.cast::<u8>().add(src_at).cast(),
+                        src_pitch,
+                        width,
+                        height,
+                    )
+                },
+                "copying rows on the GPU",
+            );
+        }
+        for row in 0..height {
+            // SAFETY: both rows in bounds (checked); `copy` allows overlap.
+            unsafe {
+                std::ptr::copy(
+                    src.ptr.cast::<u8>().add(src_at + row * src_pitch),
+                    self.ptr.cast::<u8>().add(at + row * dst_pitch),
+                    width,
+                )
+            };
+        }
+        Ok(())
+    }
+
+    /// Bytes `[at, at + len)` as a buffer of its own that does not free them.
+    pub fn view(&self, at: usize, len: usize) -> Result<DevBuf> {
+        self.bounds(at, len)?;
+        // SAFETY: in bounds (checked).
+        Ok(DevBuf {
+            gpu: self.gpu.clone(),
+            ptr: unsafe { self.ptr.cast::<u8>().add(at).cast() },
+            len,
+            owned: false,
+        })
+    }
+}
+
+/// Host memory the GPU can read in place (page-locked, CUDA's unified addressing: `device_view` is a pointer a kernel
+/// takes as it is, over PCIe); an ordinary allocation when there is no device.
+pub struct HostBuf {
+    /// pinned memory from the library (None: `data` is the memory)
+    pin: Option<*mut u8>,
+    data: Vec<u8>,
+    pub len: usize,
+    gpu: Arc<Gpu>,
+}
+
+// SAFETY: plain memory owned by the buffer.
+unsafe impl Send for HostBuf {}
+unsafe impl Sync for HostBuf {}
+
+impl Drop for HostBuf {
+    fn drop(&mut self) {
+        if let (Some(p), Some((a, r))) = (self.pin, self.gpu.dev) {
+            // SAFETY: allocated by ns_alloc_host on this GPU.
+            unsafe {
+                (a.free_host)(r, p.cast());
+            }
+        }
+    }
+}
+
+impl HostBuf {
+    pub fn new(gpu: &Arc<Gpu>, len: usize) -> Result<HostBuf> {
+        if let Some((a, r)) = gpu.dev {
+            let mut ptr = std::ptr::null_mut();
+            // SAFETY: an out-pointer to a local.
+            check(
+                a,
+                unsafe { (a.alloc_host)(r, len.max(1), &mut ptr) },
+                &format!("pinning {len} bytes of host memory"),
+            )?;
+            return Ok(HostBuf {
+                pin: Some(ptr.cast()),
+                data: Vec::new(),
+                len,
+                gpu: gpu.clone(),
+            });
+        }
+        Ok(HostBuf {
+            pin: None,
+            data: vec![0; len.max(1)],
+            len,
+            gpu: gpu.clone(),
+        })
+    }
+    fn base(&mut self) -> *mut u8 {
+        self.pin.unwrap_or(self.data.as_mut_ptr())
+    }
+    pub fn device_view(&mut self, at: usize, len: usize) -> Result<DevBuf> {
+        if at.checked_add(len).is_none_or(|e| e > self.len) {
+            return Err(Error(format!(
+                "device_view: [{at}, {}) outside {} bytes",
+                at.saturating_add(len),
+                self.len
+            )));
+        }
+        // SAFETY: in bounds (checked); the buffer outlives the view by the caller's contract.
+        Ok(DevBuf {
+            gpu: self.gpu.clone(),
+            ptr: unsafe { self.base().add(at).cast() },
+            len,
+            owned: false,
+        })
+    }
+    pub fn as_slice(&self) -> &[u8] {
+        match self.pin {
+            // SAFETY: len bytes were allocated.
+            Some(p) => unsafe { std::slice::from_raw_parts(p, self.len) },
+            None => &self.data[..self.len],
+        }
+    }
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        let n = self.len;
+        match self.pin {
+            // SAFETY: len bytes were allocated, and &mut self is exclusive.
+            Some(p) => unsafe { std::slice::from_raw_parts_mut(p, n) },
+            None => &mut self.data[..n],
+        }
+    }
+}
+
+/// A bump allocator over one allocation, as the engines on a device use it.
+pub struct Arena {
+    buf: std::sync::Mutex<DevBuf>,
+    off: std::sync::Mutex<usize>,
+    pub peak: std::sync::atomic::AtomicUsize,
+    pub spills: std::sync::atomic::AtomicUsize,
+}
+
+impl Arena {
+    pub fn new(gpu: &Arc<Gpu>, bytes: usize) -> Result<Arena> {
+        Ok(Arena::on(DevBuf::new(gpu, bytes)?))
+    }
+    pub fn on(buf: DevBuf) -> Arena {
+        Arena {
+            buf: std::sync::Mutex::new(buf),
+            off: std::sync::Mutex::new(0),
+            peak: 0.into(),
+            spills: 0.into(),
+        }
+    }
+    pub fn set(&self, buf: DevBuf) {
+        *self.buf.lock().unwrap() = buf;
+        *self.off.lock().unwrap() = 0;
+    }
+    pub fn len(&self) -> usize {
+        self.buf.lock().unwrap().len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn bytes(&self, n: usize) -> Result<DevBuf> {
+        let mut off = self.off.lock().unwrap();
+        let buf = self.buf.lock().unwrap();
+        let at = off.next_multiple_of(256);
+        if at + n > buf.len {
+            self.spills
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return DevBuf::new(&buf.gpu, n);
+        }
+        *off = at + n;
+        self.peak
+            .fetch_max(*off, std::sync::atomic::Ordering::Relaxed);
+        buf.view(at, n.max(1).min(buf.len - at))
+    }
+    pub fn f32(&self, n: usize) -> Result<DevBuf> {
+        self.bytes(n * 4)
+    }
+    pub fn reset(&self) {
+        *self.off.lock().unwrap() = 0;
+    }
+    pub fn mark(&self) -> usize {
+        *self.off.lock().unwrap()
+    }
+    pub fn rewind(&self, mark: usize) {
+        let mut off = self.off.lock().unwrap();
+        if mark < *off {
+            *off = mark;
+        }
+    }
+}

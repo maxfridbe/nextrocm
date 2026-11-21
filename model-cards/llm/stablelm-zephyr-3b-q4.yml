@@ -1,0 +1,25 @@
+{
+  "id": "stablelm-zephyr-3b-q4",
+  "kind": "llm",
+  "arch": "stablelm",
+  "title": "StableLM Zephyr 3B Q4_K_M",
+  "license": "stabilityai-community",
+  "license_note": "Conditional commercial use under the pinned Stability AI Community License: registration required; annual revenue above USD 1 million requires a separate license. See https://huggingface.co/stabilityai/stablelm-zephyr-3b/blob/fe1fd5e36ccb8cb2cb1dc225ab6d2962692b9837/LICENSE.md",
+  "gpus": "0",
+  "ctx": "4096",
+  "vram_gib": 3.5,
+  "tools": false,
+  "env": {},
+  "defaults": {},
+  "files": {
+    "model": {
+      "key": "stablelm-zephyr-3b-q4-weights",
+      "url": "https://huggingface.co/TheBloke/stablelm-zephyr-3b-GGUF/resolve/465310e5eb914190e89f531cc1c348812e27dcea/stablelm-zephyr-3b.Q4_K_M.gguf",
+      "size": 1708595648,
+      "sha256": "74b2613b6e89d904a2ea38d56d233e4d2ca2fe663844b2e7aa90e769d359061b",
+      "path": "stablelm/stablelm-zephyr-3b.Q4_K_M.gguf"
+    }
+  },
+  "commercial": true,
+  "guide": "guides/stablelm.md"
+}

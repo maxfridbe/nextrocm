@@ -1,0 +1,1004 @@
+//! The front door (`nextrocm serve`, :8000): the box at a glance and one API for everything on it.
+//!
+//! - **The page** (`/`, wfe/home): every GPU - its memory by process, and the memory the enabled models are vouched
+//!   for (hatched; several may vouch for one card: whichever loads first holds it) - and every registered model:
+//!   enable it on GPU(s), start (load now: the button spins until it answers) and stop (unload), its page, its state;
+//!   an API tab with the bearer token and a curl for every method; maintenance mode on and off (maint.rs).
+//! - **The drives** (disks.rs, crate::drives): each drive the models are on - device, link, free space, a read speed
+//!   measured on demand - and moving a model's files to another one (copied, checked, the registry repointed, the old
+//!   files removed), one move at a time, never while the model is loaded.
+//! - **Enabled models** load on their first request (an API call here, its page, Open WebUI through the switcher) and
+//!   unload after `idle_minutes` without one (the image and audio servers exit, the switcher sets the chat mode to
+//!   none, the video daemon's workers let their card go); they stay enabled. Disabled: unloaded, gone from Open WebUI's
+//!   list (the switcher lists enabled chat models) and from the API spec. The registry's `enabled` and `gpus` are the
+//!   state, so `nextrocm models enable|disable` and this page agree. Video: enabled models = the daemon's engines.
+//! - **The API** (`api.rs`): `POST /rpc/<kind>.<method>` (H3's rules: POST only, fixed routes, the JSON body carries
+//!   every variable, no path variables, no query strings; `{"ok": true, "result": ...}` or `{"ok": false, "error":
+//!   {"code", "message"}}`) and the OpenAI-compatible `/v1/...`, both behind `Authorization: Bearer <token>`;
+//!   `GET /openapi.yml` describes what the enabled kinds offer. `/api/...` is this page's own.
+//!
+//! A host process (libc only): the cards from sysfs and the DRM clients' fdinfo (gpustat's sampler, one per card), the
+//! services over HTTP, the actions by running this same program (`nextrocm image start ...`) or the video studio's
+//! llm.mode, which owns the chat card.
+
+mod api;
+mod config;
+mod disks;
+#[cfg(test)]
+mod fixture_tests;
+mod jobs;
+pub(crate) mod life;
+mod maint;
+pub(crate) mod methods;
+mod precheck;
+mod pulls;
+pub mod registry;
+mod routes;
+pub mod rsvp;
+mod spec;
+
+/// What the #[rpc] methods make (methods.rs, rpcgen), as (path under the repo, content): the typed client of the
+/// front door's methods for the wfe pages. `nextrocm gen-api` writes them; a test fails when the committed ones
+/// are stale.
+pub fn api_files() -> Vec<(&'static str, String)> {
+    let ts = rpcgen::typescript(
+        "nextrocm's front door (POST /rpc/<kind>.<method>; the answer in {ok, result | error})",
+        &methods::infos(),
+    )
+    .expect("the methods describe consistent types");
+    let mut out = vec![("wfe/home/src/gen/nextrocm.ts", ts)];
+    // the video studio's own methods (POST /rpc/<method> on its port): the TypeScript it serves at /api/types.ts, and wfe/video's
+    let studio = crate::video::studio::methods::typescript();
+    out.push(("glue/serve/src/video/studio/types.ts", studio.clone()));
+    out.push(("wfe/video/src/gen/studio.ts", studio));
+    // each server's own routes (#[route]): its page's client and its document
+    for (name, title, infos, pages) in route_tables() {
+        let ts = rpcgen::routes_typescript(title, &infos).unwrap_or_else(|e| panic!("{name}: {e}"));
+        for p in pages {
+            out.push((p, ts.clone()));
+        }
+        let info = serde_json::json!({"title": title, "version": "generated",
+            "description": "A server's own routes (127.0.0.1; the front door serves its page under /open/<id>/). Generated from its #[route] handlers by `nextrocm gen-api`: do not edit."});
+        let doc =
+            rpcgen::routes_openapi(info, "/", &infos).unwrap_or_else(|e| panic!("{name}: {e}"));
+        out.push((
+            Box::leak(format!("docs/api/{name}.openapi.yml").into_boxed_str()),
+            doc,
+        ));
+    }
+    out
+}
+
+/// Every server's route table: (its name, its title, its routes, the pages whose client it is)
+pub fn route_tables() -> Vec<(
+    &'static str,
+    &'static str,
+    Vec<rpcgen::RouteInfo>,
+    Vec<&'static str>,
+)> {
+    vec![
+        ("image", "nextrocm image server (nextrocm image serve)", crate::image::route_infos(), vec!["wfe/image/src/gen/routes.ts", "wfe/ocr/src/gen/routes.ts"]),
+        ("audio", "nextrocm audio server (nextrocm audio serve)", crate::audio::route_infos(), vec!["wfe/audio/src/gen/routes.ts"]),
+        ("model3d", "nextrocm 3D server (nextrocm model3d serve)", crate::model3d::route_infos(), vec!["wfe/model3d/src/gen/routes.ts"]),
+        ("video", "nextrocm video studio (nextrocm video serve)", crate::video::studio::routes::infos(), vec!["wfe/video/src/gen/routes.ts"]),
+        // the daemon's (its Unix socket; the studio passes /engine/... on): a document, no page
+        ("video-engine", "nextrocm video daemon (nextrocm video start: /engine/... on its socket)", crate::video::daemon::route_infos(), vec![]),
+        ("llm", "nextrocm chat server (nextrocm serve FILE)", crate::serve::route_infos(), vec![]),
+        ("home", "nextrocm's front door: its page's API and documents (nextrocm serve)", routes::infos(), vec!["wfe/home/src/gen/routes.ts"]),
+        ("v1", "nextrocm's front door: the OpenAI-compatible routes and the files (Authorization: Bearer <token>)", api::openai::infos(), vec![]),
+    ]
+}
+
+#[cfg(test)]
+mod api_files_tests {
+    use sha2::{Digest, Sha256};
+    use std::path::Path;
+
+    fn root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    /// The committed client is what the methods make: a method changed without `nextrocm gen-api` fails here.
+    #[test]
+    fn the_committed_client_is_up_to_date() {
+        for (name, text) in super::api_files() {
+            let have = std::fs::read_to_string(root().join(name)).unwrap_or_default();
+            assert!(
+                have == text,
+                "{name} is stale: run `cargo run -p nextrocm -- gen-api`"
+            );
+        }
+    }
+
+    /// The document and the client say the same things: every field, limit, default, enum and example is in both.
+    #[test]
+    fn the_document_and_the_client_agree() {
+        if let Err(e) = rpcgen::parity(&super::methods::infos()) {
+            panic!("{e}");
+        }
+        if let Err(e) = rpcgen::parity(&crate::video::studio::methods::infos()) {
+            panic!("the studio: {e}");
+        }
+        for (name, _, infos, _) in super::route_tables() {
+            if let Err(e) = rpcgen::route_parity(&infos) {
+                panic!("{name}: {e}");
+            }
+        }
+    }
+
+    /// vendor/rpcgen is the platform's rpcgen as tooling/sync_rpcgen.sh copied it: the tree hash it recorded is the
+    /// copy's (sha256 of the "sha256  path" lines, sorted by path). Edit rpcgen in vibe-creative-platform, then sync.
+    #[test]
+    fn the_vendored_rpcgen_is_unchanged() {
+        let dir = root().join("vendor/rpcgen");
+        let mut files = Vec::new();
+        let mut stack = vec![dir.clone()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs")
+                    || p.file_name().is_some_and(|n| n == "Cargo.toml")
+                {
+                    files.push(p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned());
+                }
+            }
+        }
+        files.sort();
+        let mut listing = String::new();
+        for f in &files {
+            let h = Sha256::digest(std::fs::read(dir.join(f)).unwrap());
+            listing.push_str(&format!(
+                "{}  {f}\n",
+                h.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            ));
+        }
+        let tree: String = Sha256::digest(listing.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let recorded = std::fs::read_to_string(dir.join("VENDORED")).unwrap_or_default();
+        let want = recorded
+            .lines()
+            .find_map(|l| l.strip_prefix("tree: "))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        assert_eq!(tree, want, "vendor/rpcgen was changed here: change it in vibe-creative-platform/rpcgen, then tooling/sync_rpcgen.sh");
+    }
+}
+mod yaml;
+
+use std::collections::BTreeMap;
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde_json::{json, Value};
+
+use crate::gpustat::{find_cards, Card};
+use crate::http::{self, call_for, Conn, Target};
+
+/// Where the services listen (this box's settings)
+#[derive(Clone, Debug)]
+pub struct Ports {
+    pub llm: u16,
+    pub switch: u16,
+    pub image: u16,
+    pub audio: u16,
+    pub model3d: u16,
+    /// the second image, audio and 3D servers' (a model enabled on two cards runs on both when the work asks; 0: none)
+    pub image2: u16,
+    pub audio2: u16,
+    pub model3d2: u16,
+    pub video: u16,
+    /// the chat front end (Open WebUI), a link only
+    pub chat_ui: u16,
+}
+
+pub struct Options {
+    /// dist/wfe
+    pub wfe: PathBuf,
+    /// this program, for the actions
+    pub exe: PathBuf,
+    pub ports: Ports,
+    /// the address servers started from here listen on (their pages are linked from other machines)
+    pub serve_host: String,
+    /// the registry and the settings (the program's: home::registry::Store)
+    pub cfg: Box<dyn registry::Store>,
+    /// unload an enabled model after this many minutes without a request (0: never)
+    pub idle_minutes: u64,
+}
+
+struct Run {
+    id: u64,
+    label: String,
+    started: f64,
+    log: PathBuf,
+    /// none while it runs; the exit code (or -1: did not start / an RPC error)
+    rc: Option<i32>,
+}
+
+pub struct Home {
+    o: Options,
+    /// the API's bearer token (NS_API_TOKEN, or made once and kept in the state file)
+    token: String,
+    /// serve.json beside the registry: the token, the memory each model was seen to take per card
+    state_file: PathBuf,
+    cards: Mutex<Value>,
+    runs: Mutex<Vec<Run>>,
+    next: Mutex<u64>,
+    /// models loading now (from here), and since when
+    loading: Mutex<BTreeMap<String, f64>>,
+    /// one load or swap at a time per kind
+    kind_lock: BTreeMap<&'static str, Mutex<()>>,
+    /// model id -> card -> MiB, the most seen while it ran
+    seen: Mutex<BTreeMap<String, BTreeMap<usize, u64>>>,
+    /// model id -> MiB a card must have free (as the front door counts it) for its server to start: learned when the
+    /// server refused to load for want of memory (its own check asks more than its seen peak)
+    asked: Mutex<BTreeMap<String, u64>>,
+    /// the requests sent on to each image and audio server and not answered yet, by its port
+    pub(crate) inflight: Mutex<BTreeMap<u16, usize>>,
+    /// what each image, audio and 3D server last said of itself (model, loading, busy), by its port
+    answers: Mutex<BTreeMap<u16, (String, bool, bool)>>,
+    /// the card each image/audio/3D server was last started on, by port: its card before nvidia-smi lists its process
+    pub(crate) started_on: Mutex<BTreeMap<u16, usize>>,
+    /// image and audio requests as jobs (jobs.json beside serve.json)
+    jobs: jobs::Jobs,
+    /// a job's stage while its server is chosen, and what it waits for: job id -> (stage, waiting_for)
+    stages: Mutex<BTreeMap<String, (String, String)>>,
+    /// chat model id -> kept until (unix seconds): X-Keep-Up-S on /v1/chat/completions, keep_up_s on llm.chat
+    chat_keep: Mutex<BTreeMap<String, f64>>,
+    /// maintenance mode's notice (crate::maintenance: beside the registry, every service reads it) and the key that
+    /// lets a request through it (kept in the state file; empty: none)
+    maint_file: PathBuf,
+    maint_bypass: Mutex<String>,
+    /// the drives: their measured speeds (kept in the state file), a measurement and a move under way (disks.rs)
+    disks: disks::Disks,
+    /// models being downloaded, and the last ones (pulls.rs)
+    pulls: pulls::Pulls,
+    /// model id -> its hold (rsvp_s: kept loaded until, from when its last request ended; rsvp.rs)
+    holds: Mutex<BTreeMap<String, rsvp::Hold>>,
+    /// what finished work took (history/ beside serve.json): the ETAs are made from it
+    history: backplane_scheduler::history::History,
+    /// this Home as an Arc, for work started from a call that has only `&self` (a clip watched to its end)
+    me: std::sync::OnceLock<std::sync::Weak<Home>>,
+    /// the model cards, read at most once a minute (their concurrency profiles)
+    cards_cache: Mutex<(Option<std::time::Instant>, Vec<Value>)>,
+}
+
+pub(crate) fn now() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
+}
+
+fn err(m: impl Into<String>) -> Value {
+    json!({"error": m.into()})
+}
+
+/// What a process on a GPU is: a nextrocm command (kind, command, model, port, GPUs from its arguments), or the
+/// program's name
+fn process(pid: u32) -> Value {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    let args: Vec<String> = raw
+        .split(|b| *b == 0)
+        .filter(|a| !a.is_empty())
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
+    let base = |a: &str| a.rsplit('/').next().unwrap_or(a).to_string();
+    let Some(i) = args.iter().position(|a| base(a) == "nextrocm") else {
+        let prog = args.first().map(|a| base(a)).unwrap_or_else(|| "?".into());
+        // python and friends: the script is the name
+        let what = if matches!(prog.as_str(), "python" | "python3" | "node") {
+            args.get(1).map(|a| base(a)).unwrap_or(prog)
+        } else {
+            prog
+        };
+        return json!({"pid": pid, "program": what, "args": args.join(" ").chars().take(240).collect::<String>()});
+    };
+    let rest = &args[i + 1..];
+    let get = |k: &str| {
+        rest.iter()
+            .position(|a| a == k)
+            .and_then(|j| rest.get(j + 1))
+            .cloned()
+    };
+    let gpus: Vec<String> = rest
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| *a == "--gpu")
+        .filter_map(|(j, _)| rest.get(j + 1).cloned())
+        .collect();
+    let kinds = ["llm", "image", "video", "audio", "model3d"];
+    let (kind, cmd, model) = match rest.first().map(String::as_str) {
+        Some(k) if kinds.contains(&k) => (
+            k.to_string(),
+            rest.get(1).cloned().unwrap_or_default(),
+            rest.get(2)
+                .filter(|a| !a.starts_with("--"))
+                .map(|a| base(a)),
+        ),
+        // the llm commands' old names (nextrocm serve FILE)
+        Some(c) => (
+            "llm".to_string(),
+            c.to_string(),
+            rest.get(1)
+                .filter(|a| !a.starts_with("--"))
+                .map(|a| base(a)),
+        ),
+        None => (String::new(), String::new(), None),
+    };
+    json!({"pid": pid, "program": "nextrocm", "kind": kind, "command": cmd, "model": get("--model").map(|m| base(&m)).or(model),
+           "port": get("--port"), "gpus": gpus})
+}
+
+/// Whether something accepts connections on the port (a page that is not JSON)
+fn listening(port: u16) -> bool {
+    ("127.0.0.1", port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut a| a.next())
+        .is_some_and(|a| TcpStream::connect_timeout(&a, Duration::from_millis(400)).is_ok())
+}
+
+fn meminfo() -> Value {
+    let s = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let kb = |k: &str| {
+        s.lines()
+            .find(|l| l.starts_with(k))
+            .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    let load = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|l| l.split_whitespace().next()?.parse::<f64>().ok());
+    json!({"mem_total_mb": kb("MemTotal:") / 1024, "mem_avail_mb": kb("MemAvailable:") / 1024, "load1": load,
+           "cpus": std::thread::available_parallelism().map_or(1, |n| n.get())})
+}
+
+/// 32 random bytes as hex (the kernel's generator)
+fn new_token() -> String {
+    let mut b = [0u8; 24];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = std::io::Read::read_exact(&mut f, &mut b);
+    }
+    format!(
+        "ns-{}",
+        b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    )
+}
+
+impl Home {
+    pub fn new(o: Options) -> Result<Arc<Home>, String> {
+        let h = Self::build(o)?;
+        let me = h.clone();
+        std::thread::spawn(move || me.sample_cards());
+        h.resume_jobs();
+        // the video daemon as the enabled video models say (it is this page's to start and stop)
+        let me = h.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(3));
+            if let Err(e) = me.video_apply(false) {
+                eprintln!("video: {e}");
+            }
+            // then the pinned models (after the daemon, which a pinned video model's workers need), and the watch
+            me.load_pinned();
+            me.keeper();
+        });
+        Ok(h)
+    }
+
+    /// The state, without the threads (`new` starts those)
+    fn build(o: Options) -> Result<Arc<Home>, String> {
+        let o_dir = registry::registry(&o.cfg);
+        let state_file = registry::registry(&o.cfg).with_file_name("serve.json");
+        let mut st: Value = std::fs::read(&state_file)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or(json!({}));
+        let token = match o
+            .cfg
+            .get("NS_API_TOKEN")
+            .or_else(|| st["token"].as_str().map(str::to_string))
+        {
+            Some(t) => t,
+            None => {
+                let t = new_token();
+                st["token"] = json!(t);
+                std::fs::write(
+                    &state_file,
+                    serde_json::to_string_pretty(&st).unwrap_or_default(),
+                )
+                .map_err(|e| {
+                    format!(
+                        "{}: {e} (the API token is kept there)",
+                        state_file.display()
+                    )
+                })?;
+                t
+            }
+        };
+        let seen = st["seen"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .map(|(id, g)| {
+                        (
+                            id.clone(),
+                            g.as_object()
+                                .map(|g| {
+                                    g.iter()
+                                        .filter_map(|(k, v)| Some((k.parse().ok()?, v.as_u64()?)))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let jobs = jobs::Jobs::load(state_file.with_file_name("jobs.json"));
+        let maint_file = crate::maintenance::file_beside(&registry::registry(&o.cfg));
+        let maint_bypass = Mutex::new(st["maintenance_bypass"].as_str().unwrap_or("").to_string());
+        let h = Arc::new(Home {
+            o,
+            token,
+            state_file,
+            jobs,
+            cards: Mutex::new(json!([])),
+            runs: Mutex::new(Vec::new()),
+            next: Mutex::new(1),
+            loading: Mutex::new(BTreeMap::new()),
+            kind_lock: ["llm", "image", "audio", "model3d", "video"]
+                .into_iter()
+                .map(|k| (k, Mutex::new(())))
+                .collect(),
+            seen: Mutex::new(seen),
+            asked: Mutex::new(BTreeMap::new()),
+            inflight: Mutex::new(BTreeMap::new()),
+            answers: Mutex::new(BTreeMap::new()),
+            started_on: Mutex::new(BTreeMap::new()),
+            stages: Mutex::new(BTreeMap::new()),
+            chat_keep: Mutex::new(BTreeMap::new()),
+            maint_file,
+            maint_bypass,
+            disks: disks::Disks::new(&st),
+            pulls: pulls::Pulls::default(),
+            holds: Mutex::new(BTreeMap::new()),
+            history: backplane_scheduler::history::History::open(Box::new(
+                backplane_scheduler::history::FileStorage::new(o_dir.with_file_name("history")),
+            )),
+            me: std::sync::OnceLock::new(),
+            cards_cache: Mutex::new((None, Vec::new())),
+        });
+        let _ = h.me.set(Arc::downgrade(&h));
+        Ok(h)
+    }
+
+    /// Every card every 2 s (busy % and power are deltas); what each model was seen to take, kept
+    fn sample_cards(&self) {
+        let mut cards: Vec<Card> = find_cards().iter().map(|p| Card::open(p, None)).collect();
+        let mut last_save = 0.0;
+        loop {
+            let v: Vec<Value> = cards
+                .iter_mut()
+                .enumerate()
+                .map(|(i, c)| {
+                    let (mut r, procs) = c.sample(Duration::from_secs(10));
+                    r["index"] = json!(i);
+                    // (a process that opened every card holds a few MiB of context on the ones it does not use)
+                    r["procs"] = procs
+                        .iter()
+                        .filter(|(_, mb)| *mb >= 256)
+                        .map(|(pid, mb)| {
+                            let mut p = process(*pid);
+                            p["vram_mb"] = json!(mb);
+                            p
+                        })
+                        .collect();
+                    r
+                })
+                .collect();
+            *self.cards.lock().unwrap() = Value::from(v);
+            // the most each model took on each card, kept for the vouching estimates
+            let named = self.named_cards(&self.models());
+            let mut changed = false;
+            {
+                let mut seen = self.seen.lock().unwrap();
+                for c in named.as_array().into_iter().flatten() {
+                    let gi = c["index"].as_u64().unwrap_or(0) as usize;
+                    for p in c["procs"].as_array().into_iter().flatten() {
+                        if let (Some(id), Some(mb)) =
+                            (p["model_id"].as_str(), p["vram_mb"].as_u64())
+                        {
+                            let e = seen
+                                .entry(id.to_string())
+                                .or_default()
+                                .entry(gi)
+                                .or_insert(0);
+                            if mb > *e {
+                                *e = mb;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if changed && now() - last_save > 30.0 {
+                last_save = now();
+                self.save_state();
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    }
+
+    fn save_state(&self) {
+        let st = json!({"token": self.token, "seen": *self.seen.lock().unwrap(), "maintenance_bypass": *self.maint_bypass.lock().unwrap(),
+                        "drives": *self.disks.measured.lock().unwrap()});
+        let tmp = self.state_file.with_extension("json.tmp");
+        if std::fs::write(&tmp, serde_json::to_string_pretty(&st).unwrap_or_default()).is_ok() {
+            let _ = std::fs::rename(&tmp, &self.state_file);
+        }
+    }
+
+    /// The registry (read on every call: `nextrocm models` changes it too)
+    fn models(&self) -> Vec<Value> {
+        registry::all(&self.o.cfg)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mut m| {
+                m["kind"] = json!(registry::kind_of(&m));
+                m
+            })
+            .collect()
+    }
+
+    pub fn run(self: Arc<Self>, addr: &str) -> Result<(), String> {
+        let l = TcpListener::bind(addr).map_err(|e| format!("cannot listen on {addr}: {e}"))?;
+        eprintln!(
+            "nextrocm serve on http://{addr}/ ({} GPUs)",
+            find_cards().len()
+        );
+        for c in l.incoming().flatten() {
+            let me = self.clone();
+            std::thread::spawn(move || me.handle(Conn::Tcp(c)));
+        }
+        Ok(())
+    }
+
+    fn handle(self: &Arc<Self>, mut s: Conn) {
+        let req = match http::read_request_at(&mut s) {
+            Ok(r) => r,
+            // unreadable (too large, cut short): the /rpc envelope (HTTP 200 on /rpc, as every /rpc error; 400 elsewhere),
+            // which an OpenAI client reads as error.message too
+            Err((path, e)) => {
+                let code = if e.contains("over 256 MiB") {
+                    "request_too_large"
+                } else {
+                    "invalid_request"
+                };
+                let method = path.strip_prefix("/rpc/").unwrap_or("");
+                let st = if path.starts_with("/rpc/") { 200 } else { 400 };
+                return http::respond(
+                    &mut s,
+                    st,
+                    &json!({"ok": false, "error": api::rpc_error(method, 400, Some(code), &e)}),
+                );
+            }
+        };
+        let p = req.path.as_str();
+        if p.starts_with("/rpc/") || p.starts_with("/v1/") {
+            return self.api(s, req);
+        }
+        if let Some(rest) = p.strip_prefix("/open/") {
+            return self.open(&mut s, &req, rest);
+        }
+        if req.method == "GET" && (p == "/" || p == "/index.html") {
+            return self.page(&mut s);
+        }
+        if req.method == "GET" && (p.starts_with("/ui/") || p.starts_with("/static/")) {
+            let p = p.to_string();
+            return self.asset(&mut s, &p);
+        }
+        // the page's API and the documents: what routes.rs declares
+        let mut cx = crate::page::Cx {
+            s,
+            req,
+            cors: String::new(),
+        };
+        if !crate::page::serve(routes::table(), self, &mut cx, routes::fail) {
+            let m = format!("no route {} {}", cx.req.method, cx.req.path);
+            cx.json(404, &err(m));
+        }
+    }
+
+    /// A model's own page (an image, audio or 3D model's web front end, which only its running server has), served
+    /// through this door: `/open/<id>/<sub>` starts the model when it is not up - the same as its first request - and
+    /// passes the request on to its server as `/<sub>`. Background GET info/progress/gpu requests only observe
+    /// an already loaded server, so page polling cannot undo the server's idle exit.
+    /// `/open/<id>` alone is sent to `/open/<id>/`, so the page's relative links resolve under it. Those servers check
+    /// no token and listen on --serve-host (127.0.0.1): this is how another machine reaches them. A disabled model has
+    /// none to open. The video studio is passed on the same way (it is up while a video model is enabled); the chat page is
+    /// on the network: the browser is sent there.
+    fn open(&self, s: &mut Conn, req: &http::Request, rest: &str) {
+        if self.maintenance_refused(s, req) {
+            return;
+        }
+        let (id, sub) = rest
+            .split_once('/')
+            .map_or((rest, None), |(i, r)| (i, Some(r)));
+        let m = match registry::find(&self.o.cfg, id) {
+            Ok(Some(m)) => m,
+            _ => return http::respond(s, 404, &err(format!("no model {id}"))),
+        };
+        if m["enabled"] == false {
+            return http::respond(
+                s,
+                409,
+                &err(format!("{id} is disabled: enable it to open its page")),
+            );
+        }
+        let query = req.target.find('?').map_or("", |i| &req.target[i..]);
+        let port = match registry::kind_of(&m) {
+            "image" | "audio" | "model3d" => {
+                let Some(sub) = sub else {
+                    let to = format!("/open/{id}/{query}");
+                    return http::respond_bytes(
+                        s,
+                        302,
+                        "text/plain; charset=utf-8",
+                        b"",
+                        &format!("Location: {to}\r\nCache-Control: no-cache\r\n"),
+                    );
+                };
+                // Status polling observes a running server; it must not undo idle unload.
+                let passive =
+                    req.method == "GET" && matches!(sub, "api/info" | "api/progress" | "api/gpu");
+                let target = if passive {
+                    self.observe_loaded(id, registry::kind_of(&m))
+                } else {
+                    self.ensure(id)
+                };
+                let lease = match target {
+                    Ok(l) => l,
+                    Err((c, e)) => return http::respond(s, c, &err(e)),
+                };
+                if let Err(e) = http::forward_to(&mut *s, &lease, req, &format!("/{sub}{query}")) {
+                    http::respond(s, 502, &err(e));
+                }
+                return;
+            }
+            // the studio: up while a video model is enabled (with the daemon); on 127.0.0.1 like the model servers
+            "video" => {
+                let Some(sub) = sub else {
+                    let to = format!("/open/{id}/{query}");
+                    return http::respond_bytes(
+                        s,
+                        302,
+                        "text/plain; charset=utf-8",
+                        b"",
+                        &format!("Location: {to}\r\nCache-Control: no-cache\r\n"),
+                    );
+                };
+                let studio = http::Target::Tcp(format!("127.0.0.1:{}", self.o.ports.video));
+                if let Err(e) = http::forward_to(&mut *s, &studio, req, &format!("/{sub}{query}")) {
+                    http::respond(
+                        s,
+                        502,
+                        &err(format!("the video studio does not answer: {e}")),
+                    );
+                }
+                return;
+            }
+            _ => self.o.ports.chat_ui,
+        };
+        let host = req
+            .host
+            .as_deref()
+            .unwrap_or("localhost")
+            .rsplit_once(':')
+            .map_or_else(
+                || req.host.clone().unwrap_or_default(),
+                |(h, _)| h.to_string(),
+            );
+        let host = if host.is_empty() {
+            "localhost".to_string()
+        } else {
+            host
+        };
+        http::respond_bytes(
+            s,
+            302,
+            "text/plain; charset=utf-8",
+            b"",
+            &format!("Location: http://{host}:{port}/\r\nCache-Control: no-cache\r\n"),
+        );
+    }
+
+    fn page(&self, s: &mut Conn) {
+        let dir = self.o.wfe.join("home");
+        match (
+            crate::wfe::text(&self.o.wfe, "home/index.html"),
+            crate::wfe::text(&self.o.wfe, "home/style.css"),
+        ) {
+            (Some(h), Some(c)) => http::respond_bytes(
+                s,
+                200,
+                "text/html; charset=utf-8",
+                h.replace("__CSS__", &c).as_bytes(),
+                "Cache-Control: no-cache\r\n",
+            ),
+            _ => http::respond(
+                s,
+                500,
+                &err(format!(
+                    "{}: the page is not built (./build.sh wfe)",
+                    dir.display()
+                )),
+            ),
+        }
+    }
+
+    fn asset(&self, s: &mut Conn, path: &str) {
+        let rel = path
+            .strip_prefix("/ui/")
+            .unwrap_or(path.trim_start_matches('/'));
+        if rel.split('/').any(|c| c == ".." || c.is_empty()) {
+            return http::respond(s, 404, &err("no such file"));
+        }
+        let kind = match rel.rsplit('.').next() {
+            Some("js") => "text/javascript; charset=utf-8",
+            Some("css") => "text/css; charset=utf-8",
+            Some("woff2") => "font/woff2",
+            Some("ttf") => "font/ttf",
+            Some("svg") => "image/svg+xml",
+            _ => "application/octet-stream",
+        };
+        match crate::wfe::read(&self.o.wfe, rel).ok_or(()) {
+            Ok(b) => http::respond_bytes(s, 200, kind, &b, "Cache-Control: no-cache\r\n"),
+            Err(_) => http::respond(s, 404, &err(format!("no file {rel}"))),
+        }
+    }
+
+    /// The front ends and helpers beside the models: up or not, a link
+    fn services(&self) -> Vec<Value> {
+        let p = self.o.ports.clone();
+        // the studio's page through this door (its own port is on 127.0.0.1): under an enabled video model's /open/
+        let studio = self
+            .models()
+            .into_iter()
+            .find(|m| m["kind"] == "video" && m["enabled"] != false)
+            .and_then(|m| m["id"].as_str().map(|i| format!("/open/{i}/")));
+        let probes: Vec<Box<dyn FnOnce() -> Value + Send>> = vec![
+            Box::new(move || {
+                json!({"id": "chat-ui", "title": "Chat", "what": "the chat front end (Open WebUI)", "port": p.chat_ui,
+                                    "up": listening(p.chat_ui), "link": "/"})
+            }),
+            Box::new(move || {
+                let m = call_for(
+                    &Target::Tcp(format!("127.0.0.1:{}", p.switch)),
+                    "GET",
+                    "/v1/models",
+                    None,
+                    3,
+                )
+                .ok();
+                let n = m.as_ref().and_then(|m| {
+                    m["data"]
+                        .as_array()
+                        .map(|a| a.iter().filter(|x| x["kind"].is_null()).count())
+                });
+                json!({"id": "switch", "title": "Model switch", "what": "one OpenAI endpoint for Open WebUI over the enabled chat models",
+                       "port": p.switch, "up": m.is_some(), "detail": n.map(|n| format!("{n} chat models listed")), "api": "/v1"})
+            }),
+            Box::new(move || {
+                let up = call_for(
+                    &Target::Tcp(format!("127.0.0.1:{}", p.video)),
+                    "POST",
+                    "/rpc/status",
+                    Some(&json!({})),
+                    3,
+                )
+                .is_ok();
+                json!({"id": "studio", "title": "Video studio", "what": "nextrocm video studio (MiniMax H3): clips, queue, projects", "port": p.video,
+                       "up": up, "link": "/", "href": studio})
+            }),
+        ];
+        let hs: Vec<_> = probes.into_iter().map(std::thread::spawn).collect();
+        hs.into_iter()
+            .map(|h| h.join().unwrap_or(Value::Null))
+            .collect()
+    }
+
+    fn state(&self) -> Value {
+        let all = self.models();
+        let cards = self.named_cards(&all);
+        let models = self.model_states(&all, &cards);
+        let runs: Vec<Value> = {
+            let ids: Vec<u64> = self
+                .runs
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .take(8)
+                .map(|r| r.id)
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| self.run_json(id, 2048))
+                .collect()
+        };
+        let mut cards = cards;
+        self.vouch(&mut cards, &models);
+        {
+            let (by_port, vid) = (self.running_by_port(), self.running_video());
+            for p in cards
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+                .flat_map(|c| c["procs"].as_array_mut().into_iter().flatten())
+            {
+                let job = crate::home::life::job_of_proc(p, &by_port, vid.as_ref());
+                crate::home::life::tag_job(p, job.as_ref());
+            }
+        }
+        let maintenance = self.maintenance().map(|n| {
+            let mut v = maint::public(&n);
+            v["bypass"] = json!(*self.maint_bypass.lock().unwrap());
+            v
+        });
+        json!({"ts": now(), "host": meminfo(), "cards": cards, "models": models, "services": self.services(), "runs": runs,
+               "idle_minutes": self.o.idle_minutes, "ports": {"video": self.o.ports.video, "chat_ui": self.o.ports.chat_ui},
+               "maintenance": maintenance, "drives": self.drives_view(&all, &models),
+               // the models a card offers that are not here yet, their downloads, and whether a request fetches one itself
+               "available": self.not_downloaded_all(), "pulls": self.pulls_view(), "auto_pull": self.auto_pull()})
+    }
+
+    /// The cards, a process's model by its registry id where its file is a registered one (`model_id`)
+    fn named_cards(&self, all: &[Value]) -> Value {
+        let base = |f: &str| f.rsplit('/').next().unwrap_or(f).to_string();
+        let mut cards = self.cards.lock().unwrap().clone();
+        // a chat process by what the chat server answers as (several entries can share one file)
+        let chat = if cards.to_string().contains("\"kind\":\"llm\"") {
+            self.chat_loaded(all)
+        } else {
+            None
+        };
+        for p in cards
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+            .flat_map(|c| c["procs"].as_array_mut().into_iter().flatten())
+        {
+            if let (Some(id), "llm") = (&chat, p["kind"].as_str().unwrap_or("")) {
+                p["model"] = json!(id);
+            }
+            if let Some(f) = p["model"].as_str().map(str::to_string) {
+                if let Some(m) = all.iter().find(|m| {
+                    m["file"].as_str().is_some_and(|x| base(x) == f) || m["id"] == f.as_str()
+                }) {
+                    p["model"] = m["id"].clone();
+                    p["model_id"] = m["id"].clone();
+                    p["title"] = m["title"].clone();
+                }
+            }
+        }
+        cards
+    }
+
+    fn run_json(&self, id: u64, tail: usize) -> Option<Value> {
+        let runs = self.runs.lock().unwrap();
+        let r = runs.iter().find(|r| r.id == id)?;
+        let out = std::fs::read(&r.log).unwrap_or_default();
+        let out = String::from_utf8_lossy(&out[out.len().saturating_sub(tail)..]).into_owned();
+        Some(json!({"id": r.id, "label": r.label, "started": r.started, "rc": r.rc, "out": out}))
+    }
+
+    fn new_run(&self, label: String) -> (u64, PathBuf) {
+        let id = {
+            let mut n = self.next.lock().unwrap();
+            *n += 1;
+            *n - 1
+        };
+        let dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("nextrocm-serve");
+        let _ = std::fs::create_dir_all(&dir);
+        let log = dir.join(format!("run-{}-{id}.log", std::process::id()));
+        let mut runs = self.runs.lock().unwrap();
+        runs.push(Run {
+            id,
+            label,
+            started: now(),
+            log: log.clone(),
+            rc: None,
+        });
+        if runs.len() > 50 {
+            let old = runs.remove(0);
+            let _ = std::fs::remove_file(old.log);
+        }
+        (id, log)
+    }
+
+    fn finish(&self, id: u64, rc: i32) {
+        if let Some(r) = self.runs.lock().unwrap().iter_mut().find(|r| r.id == id) {
+            r.rc = Some(rc);
+        }
+    }
+
+    /// This program with these arguments, to the end; its output to a run's log (the page shows it). Ok: the run.
+    fn exec(&self, label: String, args: &[String]) -> Result<u64, String> {
+        self.exec_env(label, args, &[])
+    }
+
+    /// `exec` with variables set for the program (the video daemon's NS_VIDEO_IDLE)
+    fn exec_env(
+        &self,
+        label: String,
+        args: &[String],
+        env: &[(&str, &str)],
+    ) -> Result<u64, String> {
+        let (id, log) = self.new_run(label.clone());
+        let f = std::fs::File::create(&log).map_err(|e| format!("{}: {e}", log.display()))?;
+        let f2 = f.try_clone().map_err(|e| e.to_string())?;
+        let st = std::process::Command::new(&self.o.exe)
+            .args(args)
+            .envs(env.iter().copied())
+            .stdin(std::process::Stdio::null())
+            .stdout(f)
+            .stderr(f2)
+            .status();
+        let rc = st.ok().and_then(|s| s.code()).unwrap_or(-1);
+        self.finish(id, rc);
+        if rc == 0 {
+            Ok(id)
+        } else {
+            let out = std::fs::read_to_string(&log).unwrap_or_default();
+            Err(format!(
+                "{label}: {}",
+                out.lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("failed")
+            ))
+        }
+    }
+
+    /// The page's buttons: {"do": enable | disable | pin | unpin | measure | move | move_cancel, "model", "gpus": [..],
+    /// "force", "drive"}; a pin (it loads), a measurement and a move run on (the state shows them), the others answer when
+    /// done. `load` and `unload` are also actions, for tools: the page has no buttons for them
+    fn action(self: &Arc<Self>, b: &Value) -> Result<Value, (u16, String)> {
+        let model = b["model"].as_str().unwrap_or("").to_string();
+        match b["do"].as_str().unwrap_or("") {
+            "enable" => self.enable(&model, b.get("gpus")).map(|m| json!({"model": m})),
+            "disable" => self.disable(&model, b["force"] == true).map(|_| json!({"model": model, "enabled": false})),
+            "gpus" => self.set_gpus(&model, b.get("gpus")),
+            "load" => {
+                self.load_async(&model)?;
+                Ok(json!({"model": model, "loading": true}))
+            }
+            "unload" => self.unload(&model).map(|_| json!({"model": model, "loaded": false})),
+            "pin" => {
+                self.pin(&model)?;
+                Ok(json!({"model": model, "pinned": true, "loading": true}))
+            }
+            "unpin" => self.unpin(&model).map(|_| json!({"model": model, "pinned": false})),
+            "config" => self.config_set(b),
+            "restart" => self.restart(b["service"].as_str().unwrap_or("")),
+            "maintenance" => self.maintenance_set(b),
+            "measure" => self.drive_measure(b["drive"].as_str().unwrap_or("")),
+            "move" => self.model_move(&model, b["drive"].as_str().unwrap_or("")),
+            "move_cancel" => self.move_cancel(),
+            "pull" => self.pull_start(&model).map(|p| json!({"pull": p.view()})),
+            "pull_cancel" => self.pull_cancel(&model),
+            // the page's checkbox: NS_AUTO_PULL in the settings file (read live: no restart)
+            "auto_pull" => self.config_set(&json!({"set": {"NS_AUTO_PULL": if b["on"] == true { json!("1") } else { Value::Null }}}))
+                .map(|_| json!({"auto_pull": self.auto_pull()})),
+            other => Err((400, format!("no action {other:?} (enable, disable, gpus, load, unload, pin, unpin, config, restart, maintenance, measure, move, move_cancel, pull, pull_cancel, auto_pull)"))),
+        }
+    }
+}

@@ -1,0 +1,23 @@
+{
+  "revision": "919794500475862f6768c353255469dc661cb734",
+  "archive_sha256": "bda38af4473204bb5df5be78fd6339a5a82526faf2bd726a0c682173978ec6a5",
+  "files": {
+    "gguf/__init__.py": "3ccfc0104cd7ea88c6028743b7bf3f2c89b5f474425de03a217a6072320d7c2f",
+    "gguf/constants.py": "2ee0f3320dd0b26c04cc96f2684b892dbb6f853dc9117b2d418918ee6e39f3d0",
+    "gguf/gguf.py": "f0c0eeedad0911784b52ffed8e162a0eb5ae6d535ce35705bc16196e46597a72",
+    "gguf/gguf_reader.py": "9501f9df1f81ba5697600e5ee668c82588945d558e0974e506011af64cd76e7c",
+    "gguf/gguf_writer.py": "43ed127a4c26b904ac5a326d6196235cc3f6291586721c06aee863a758d652c5",
+    "gguf/lazy.py": "dbcf8b7376284ab2d920103657cc52c1c62e93fec3856a08a1ae638394e6a7c1",
+    "gguf/metadata.py": "7cedac3b8457271a3f58e5531a7e6958fdecb9ea072f7895ba5d7f6693c9db29",
+    "gguf/quants.py": "f896726209ba8c91afd083dd87031c2d39dc4ef6a78e8a6c12763eeb8ed6ff84",
+    "gguf/scripts/gguf_convert_endian.py": "6ecc8d50c30fa0f3056c666795bcb23ed1de82aad45f86433b9855ce9b546c31",
+    "gguf/scripts/gguf_dump.py": "d8b8fc28e96d15d8a4d6f05cdff4a747f5a06f31172efee9dfc971998ed0203f",
+    "gguf/scripts/gguf_editor_gui.py": "6e9d70e850268fff5d4108d9ecbc2b4d90e70b61f08e71f7d37ac20916d854bb",
+    "gguf/scripts/gguf_hash.py": "9f277c9338d12a73857a4e54683d7da4d5de01531751f14401267c9289e4197f",
+    "gguf/scripts/gguf_new_metadata.py": "972499d35957b4721b9243828d5547d1c84def8d4e6fc641887c6578bf765255",
+    "gguf/scripts/gguf_set_metadata.py": "c8612a7109428a677ea55976dd5eeed6088934ddef7ef01246a5bc7a6e585b3b",
+    "gguf/tensor_mapping.py": "e05a20e208753daa8cd1983b23515268b8e580028cd945eff9630101c4443c10",
+    "gguf/utility.py": "da920e2c62166ec9f30e407e9fb35ec29fda671310ffbf0f8ce856b62f1c70d7",
+    "gguf/vocab.py": "fce519b621f873213973c8186b010d7c41d6bb22134e411c8d47bf3a3e63f807"
+  }
+}

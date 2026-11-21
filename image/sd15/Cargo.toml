@@ -1,0 +1,17 @@
+[package]
+name = "nextrocm-image-sd15"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Rust-owned SD1.5 CLIP, UNet and VAE graph over native HIP primitives"
+
+[dependencies]
+nextrocm-engine-core = { path = "../../crates/engine-core" }
+nextrocm-image = { path = "../contract" }
+nextrocm-diffusion = { path = "../../crates/diffusion" }
+nextrocm-gguf = { path = "../../crates/gguf" }
+serde_json = "1"
+regex = "1"
+
+[dev-dependencies]
+sha2 = "0.10"

@@ -1,0 +1,13 @@
+[package]
+name = "nextrocm-llm-qwen3moe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Bounded native HIP Qwen3 MoE text engine"
+[dependencies]
+nextrocm-engine-core = { path = "../../crates/engine-core" }
+nextrocm-gguf = { path = "../../crates/gguf" }
+nextrocm-llm = { path = "../contract" }
+nextrocm-tok = { path = "../../crates/tok" }
+libc = "0.2"
+serde_json = { version = "1", features = ["preserve_order"] }

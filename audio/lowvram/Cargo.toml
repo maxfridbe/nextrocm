@@ -1,0 +1,11 @@
+[package]
+name = "nextrocm-audio-lowvram"
+description = "Resident Canary-Qwen and GGML Whisper adapters for the native HIP audio bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nextrocm-audio.workspace = true
+nextrocm-engine-core.workspace = true
+serde_json.workspace = true
