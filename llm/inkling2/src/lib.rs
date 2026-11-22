@@ -30,3 +30,5 @@ mod registration;
 pub use registration::{info, kind};
 
 pub mod expert_cache;
+
+pub mod expert_batch;

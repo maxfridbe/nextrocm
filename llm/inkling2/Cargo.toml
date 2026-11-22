@@ -11,3 +11,10 @@ nextrocm-gguf = { path = "../../crates/gguf" }
 nextrocm-engine-core = { path = "../../crates/engine-core" }
 nextrocm-tok = { path = "../../crates/tok" }
 nextrocm-llm = { path = "../contract" }
+
+[features]
+diagnostic-state = []
+
+[[example]]
+name = "wopr_expert_state"
+required-features = ["diagnostic-state"]

@@ -19,10 +19,11 @@ use std::{
 
 const USAGE: &str = "nextrocm llm engines | info MODEL | tokenize MODEL TEXT | prepare MODEL
 nextrocm llm generate MODEL --prompt TEXT | --prompt-file FILE | --ids FILE
-    [--max N] [--temp T] [--top-p P] [--seed N] [--gpu N] [--ctx N] [--ignore-eos] [--expert-gib G] [--inkling-host-embedding] [--inkling-cache-policy fixed|segmented]
+    [--max N] [--temp T] [--top-p P] [--seed N] [--gpu N] [--ctx N] [--ignore-eos] [--expert-gib G] [--inkling-host-embedding] [--inkling-cache-policy fixed|segmented] [--inkling-prefill 1|2|4]
 nextrocm llm serve MODEL_OR_ID [--host 127.0.0.1] [--port 8085] [--ctx N[,M...]]
-    [--parallel N] [--name ID] [--socket PATH] [--prompt-cache-mib N] [--cache-dir DIR] [--expert-gib G] [--inkling-host-embedding] [--inkling-cache-policy fixed|segmented]
+    [--parallel N] [--name ID] [--socket PATH] [--prompt-cache-mib N] [--cache-dir DIR] [--expert-gib G] [--inkling-host-embedding] [--inkling-cache-policy fixed|segmented] [--inkling-prefill 1|2|4]
     --inkling-host-embedding: explicitly stream packed embedding rows for Inkling only
+    --inkling-prefill: explicit plain-feed chunk; default1, service feed_until stays serial
     --inkling-cache-policy: explicit Inkling cache; omitted retains fixed default, segmented requires positive expert budget
     --expert-gib: device expert-cache budget in GiB; 0 selects streaming for Inkling, omitted keeps engine default
 nextrocm llm start ID | --model FILE [serve options] | stop | logs [--no-follow]";
@@ -102,8 +103,11 @@ fn load_engine<'g>(
     mut o: LoadOptions,
     host_embedding: bool,
     cache_policy: Option<InklingCachePolicy>,
+    prefill: Option<usize>,
 ) -> Result<Box<dyn Engine + 'g>, String> {
-    let selected_mode = inkling_load_mode(f, host_embedding, cache_policy, o.expert_bytes)?;
+    validate_prefill(f.architecture(), prefill)?;
+    let policy = cache_policy.or_else(|| prefill.map(|_| InklingCachePolicy::Fixed));
+    let selected_mode = inkling_load_mode(f, host_embedding, policy, o.expert_bytes)?;
     let kinds = engines();
     let k = nextrocm_llm::kind_for(&kinds, f)?;
     for (var, value) in crate::opt_env(&options(k), nextrocm_engine_core::At::Load, k.name)? {
@@ -111,7 +115,7 @@ fn load_engine<'g>(
     }
     if let Some(mode) = selected_mode {
         o.expert_bytes = None; // Explicit policy is carried once, never conflicts.
-        return nextrocm_llm_inkling2::adapter::load_with_policies(
+        return nextrocm_llm_inkling2::adapter::load_with_prefill_policies(
             f,
             gpus,
             &o,
@@ -123,10 +127,26 @@ fn load_engine<'g>(
             } else {
                 nextrocm_llm_inkling2::device::EmbeddingMode::Resident
             },
+            prefill.unwrap_or(1),
         )
         .map_err(|e| e.0);
     }
     (k.load)(f, gpus, &o, &mut |line| eprintln!("[{line}]")).map_err(|e| e.0)
+}
+fn inkling_prefill(value: Option<&str>) -> Result<Option<usize>, String> {
+    match value {
+        None => Ok(None),
+        Some("1") => Ok(Some(1)),
+        Some("2") => Ok(Some(2)),
+        Some("4") => Ok(Some(4)),
+        _ => Err("--inkling-prefill must be 1,2,4".into()),
+    }
+}
+fn validate_prefill(arch: &str, prefill: Option<usize>) -> Result<(), String> {
+    if prefill.is_some() && arch != "inkling2" {
+        return Err("--inkling-prefill requires Inkling".into());
+    }
+    Ok(())
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InklingCachePolicy {
@@ -375,15 +395,23 @@ fn generate(args: &[String]) -> Result<(), String> {
             "--effort",
             "--expert-gib",
             "--inkling-cache-policy",
+            "--inkling-prefill",
         ],
         &["--ignore-eos", "--no-mtp", "--inkling-host-embedding"],
     )?;
     let expert_bytes = expert_budget(opt(args, "--expert-gib"))?;
     let cache_policy = inkling_cache_policy(opt(args, "--inkling-cache-policy"))?;
+    let prefill = inkling_prefill(opt(args, "--inkling-prefill"))?;
     let host_embedding = args.iter().any(|a| a == "--inkling-host-embedding");
     let model = args.get(1).ok_or(USAGE)?;
     let f = Gguf::open(Path::new(model)).map_err(|e| e.0)?;
-    inkling_load_mode(&f, host_embedding, cache_policy, expert_bytes)?;
+    validate_prefill(f.architecture(), prefill)?;
+    inkling_load_mode(
+        &f,
+        host_embedding,
+        cache_policy.or_else(|| prefill.map(|_| InklingCachePolicy::Fixed)),
+        expert_bytes,
+    )?;
     let trained_context = context_limit(&f)?;
     let tok = Tokenizer::from_gguf(&f)?;
     let ids = prompt_ids(&f, &tok, args)?;
@@ -416,6 +444,9 @@ fn generate(args: &[String]) -> Result<(), String> {
     let seed = number(args, "--seed", 1u64)?;
     let mut rng = nextrocm_llm::sampling::Rng(seed.max(1));
     validate_inkling_inputs(f.architecture(), &ids, &[ctx])?;
+    if prefill.unwrap_or(1) > ctx {
+        return Err("prefill exceeds context".into());
+    }
     let gs = gpu(args)?;
     let eng = load_engine(
         &f,
@@ -428,6 +459,7 @@ fn generate(args: &[String]) -> Result<(), String> {
         },
         host_embedding,
         cache_policy,
+        prefill,
     )?;
     let mut session = eng.session(ctx).map_err(|e| e.0)?;
     let start = Instant::now();
@@ -542,15 +574,23 @@ fn serve_file(args: &[String]) -> Result<(), String> {
             "--cors",
             "--expert-gib",
             "--inkling-cache-policy",
+            "--inkling-prefill",
         ],
         &["--no-mtp", "--here", "--inkling-host-embedding"],
     )?;
     let expert_bytes = expert_budget(opt(args, "--expert-gib"))?;
     let cache_policy = inkling_cache_policy(opt(args, "--inkling-cache-policy"))?;
+    let prefill = inkling_prefill(opt(args, "--inkling-prefill"))?;
     let host_embedding = args.iter().any(|a| a == "--inkling-host-embedding");
     let model = args.get(1).ok_or(USAGE)?;
     let f: &'static Gguf = Box::leak(Box::new(Gguf::open(Path::new(model)).map_err(|e| e.0)?));
-    inkling_load_mode(&f, host_embedding, cache_policy, expert_bytes)?;
+    validate_prefill(f.architecture(), prefill)?;
+    inkling_load_mode(
+        &f,
+        host_embedding,
+        cache_policy.or_else(|| prefill.map(|_| InklingCachePolicy::Fixed)),
+        expert_bytes,
+    )?;
     let trained_context = context_limit(f)?;
     let chat = chat_of(f)?;
     let tok = Tokenizer::from_gguf(f)?;
@@ -602,6 +642,9 @@ fn serve_file(args: &[String]) -> Result<(), String> {
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
         .collect();
+    if prefill.unwrap_or(1) > reserve {
+        return Err("prefill exceeds context".into());
+    }
     let gs = gpu(args)?;
     let eng = load_engine(
         f,
@@ -614,6 +657,7 @@ fn serve_file(args: &[String]) -> Result<(), String> {
         },
         host_embedding,
         cache_policy,
+        prefill,
     )?;
     let mut cache = PromptCache::new(cache_bytes);
     if let Some(dir) = opt(args, "--cache-dir") {
@@ -869,6 +913,19 @@ pub(crate) fn cmd(cfg: &Config, args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prefill_is_explicit_bounded_and_inkling_only() {
+        assert_eq!(inkling_prefill(None).unwrap(), None);
+        for (v, n) in [("1", 1), ("2", 2), ("4", 4)] {
+            assert_eq!(inkling_prefill(Some(v)).unwrap(), Some(n));
+            assert!(validate_prefill("inkling2", Some(n)).is_ok());
+            assert!(validate_prefill("qwen35", Some(n)).is_err());
+        }
+        for v in ["0", "3", "8", "-1", "2.0", "auto", ""] {
+            assert!(inkling_prefill(Some(v)).is_err());
+        }
+        assert!(validate_prefill("qwen35", None).is_ok());
+    }
     #[test]
     fn segmented_policy_is_explicit_and_preserves_default_and_streaming() {
         use nextrocm_llm_inkling2::expert_cache::ExpertMode;

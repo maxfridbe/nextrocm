@@ -53,3 +53,19 @@ impl TextGraph {
         self.cursor.restore_position(position)
     }
 }
+
+#[cfg(feature = "diagnostic-state")]
+impl TextGraph {
+    pub fn diagnostic_reset(&mut self) -> Result<()> {
+        self.reset_state()
+    }
+    pub fn diagnostic_snapshot(&self) -> Result<(usize, Vec<u8>)> {
+        self.snapshot()
+    }
+    pub fn diagnostic_restore(&mut self, pos: usize, bytes: &[u8]) -> Result<()> {
+        self.restore_state(pos, bytes)
+    }
+    pub fn diagnostic_state_bytes(&self) -> usize {
+        self.state_bytes()
+    }
+}

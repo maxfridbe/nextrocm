@@ -76,6 +76,7 @@ struct Model {
     live: Mutex<Live>,
     owner: Arc<()>,
     context: usize,
+    feed_chunk: usize,
     bytes: u64,
     seconds: f64,
     state_bytes: usize,
@@ -249,6 +250,36 @@ fn load_impl_with_embedding<'g>(
     mode: crate::expert_cache::ExpertMode,
     embedding: crate::device::EmbeddingMode,
 ) -> Result<Box<dyn Engine + 'g>> {
+    load_prefill_impl(f, gpus, o, log, cancel, mode, embedding, 1)
+}
+/// Explicit plain-feed chunk policy. feed_until retains serial stop semantics.
+pub fn load_with_prefill_policies<'g>(
+    f: &'g Gguf,
+    gpus: &[Arc<Gpu>],
+    o: &LoadOptions,
+    log: &mut dyn FnMut(String),
+    cancel: Arc<AtomicBool>,
+    mode: crate::expert_cache::ExpertMode,
+    embedding: crate::device::EmbeddingMode,
+    feed_chunk: usize,
+) -> Result<Box<dyn Engine + 'g>> {
+    if !matches!(feed_chunk, 1 | 2 | 4) || o.expert_bytes.is_some() {
+        return Err(err(
+            "explicit prefill requires chunk1/2/4 and no conflicting expert_bytes",
+        ));
+    }
+    load_prefill_impl(f, gpus, o, log, cancel, mode, embedding, feed_chunk)
+}
+fn load_prefill_impl<'g>(
+    f: &'g Gguf,
+    gpus: &[Arc<Gpu>],
+    o: &LoadOptions,
+    log: &mut dyn FnMut(String),
+    cancel: Arc<AtomicBool>,
+    mode: crate::expert_cache::ExpertMode,
+    embedding: crate::device::EmbeddingMode,
+    feed_chunk: usize,
+) -> Result<Box<dyn Engine + 'g>> {
     let start = Instant::now();
     if cancel.load(Ordering::Relaxed) {
         return Err(err("Inkling load cancelled"));
@@ -259,7 +290,7 @@ fn load_impl_with_embedding<'g>(
         ));
     }
     let context = if o.kv.0 == 0 { MAX_CONTEXT } else { o.kv.0 };
-    if context == 0 || context > MAX_CONTEXT || f.paths.len() != 1 {
+    if context == 0 || context > MAX_CONTEXT || feed_chunk > context || f.paths.len() != 1 {
         return Err(err("Inkling supports one GGUF and context1..4096"));
     }
     let w = Weights::read(f).map_err(err)?;
@@ -277,7 +308,7 @@ fn load_impl_with_embedding<'g>(
     let cfg = MiniConfig::from_official_json(include_bytes!("../assets/mini-config.json"))
         .map_err(err)?;
     let gpu = gpus[0].clone();
-    let graph = TextGraph::load_with_policies(
+    let graph = TextGraph::load_with_expert_prefill_policies(
         &f.paths[0],
         &cfg,
         &gpu,
@@ -285,6 +316,8 @@ fn load_impl_with_embedding<'g>(
         available()?,
         mode,
         embedding,
+        feed_chunk,
+        feed_chunk > 1,
         || {
             if cancel.load(Ordering::Relaxed) {
                 Err("Inkling load cancelled".into())
@@ -295,7 +328,7 @@ fn load_impl_with_embedding<'g>(
     )
     .map_err(err)?;
     let state_bytes = graph.state_bytes();
-    log(format!("Inkling native F32 text: one session, context{context}, packed resident{bytes}, expert policy {mode:?}, embedding {embedding:?}; no vision/tools/draft"));
+    log(format!("Inkling native F32 text: one session, context{context}, packed resident{bytes}, expert policy {mode:?}, embedding {embedding:?}, plain-feed chunk{feed_chunk}, expert batch{} (feed_until serial); no vision/tools/draft", feed_chunk > 1));
     Ok(Box::new(Model {
         gpu,
         live: Mutex::new(Live {
@@ -305,6 +338,7 @@ fn load_impl_with_embedding<'g>(
         }),
         owner: Arc::new(()),
         context,
+        feed_chunk,
         bytes,
         seconds: start.elapsed().as_secs_f64(),
         state_bytes,
@@ -465,7 +499,46 @@ impl Engine for Model {
         ))
     }
     fn feed(&self, s: &mut Session, t: &[u32], tap: Tap) -> Result<Vec<f32>> {
-        Ok(self.feed_until(s, t, &|_| false, tap)?.1)
+        if self.feed_chunk == 1 {
+            return Ok(self.feed_until(s, t, &|_| false, tap)?.1);
+        }
+        self.validate(s, t)?;
+        let mut last = Vec::new();
+        for ids in t.chunks(self.feed_chunk) {
+            let state = self.sess_mut(s)?;
+            let mut live = self.live()?;
+            Self::lease(&live, state)?;
+            state.last = false;
+            let result = live.graph.chunk(
+                ids,
+                || {
+                    if self.cancel.load(Ordering::Relaxed) {
+                        Err("request cancelled during chunk; reset required".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                |_, v, b| tap(&format!("l_out-{}", v.ordinal), b).map_err(|e| e.0),
+            );
+            match result {
+                Ok(mut rows) => {
+                    if rows.len() != ids.len() || rows.is_empty() {
+                        state.poisoned = true;
+                        return Err(err("chunk output row count mismatch; reset required"));
+                    }
+                    state.pos += ids.len();
+                    state.last = true;
+                    last = rows
+                        .pop()
+                        .ok_or_else(|| err("chunk returned no output rows"))?;
+                }
+                Err(e) => {
+                    state.poisoned = true;
+                    return Err(err(e));
+                }
+            }
+        }
+        Ok(last)
     }
     fn feed_until(
         &self,

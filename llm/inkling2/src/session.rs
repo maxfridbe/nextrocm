@@ -89,6 +89,7 @@ pub struct Cursor {
     position: usize,
     operation: usize,
     active: bool,
+    pending: usize,
     poisoned: bool,
 }
 impl Cursor {
@@ -98,24 +99,44 @@ impl Cursor {
             position: 0,
             operation: 0,
             active: false,
+            pending: 0,
             poisoned: false,
         }
     }
     pub(crate) fn settled_position(&self) -> Result<usize> {
-        if self.active || self.poisoned { return Err("session is active or poisoned".into()); }
+        if self.active || self.poisoned {
+            return Err("session is active or poisoned".into());
+        }
         Ok(self.position)
     }
     /// Only after all KV and convolution state has been reset/restored successfully.
     pub(crate) fn restore_position(&mut self, position: usize) -> Result<()> {
-        if position > self.plan.context() { return Err("restored position exceeds context".into()); }
-        self.position = position; self.operation = 0; self.active = false; self.poisoned = false;
+        if position > self.plan.context() {
+            return Err("restored position exceeds context".into());
+        }
+        self.position = position;
+        self.operation = 0;
+        self.active = false;
+        self.poisoned = false;
         Ok(())
     }
     pub fn begin(&mut self) -> Result<usize> {
-        if self.poisoned || self.active || self.position >= self.plan.context() {
-            return Err("session unavailable/active/context exhausted".into());
+        self.begin_chunk(1)
+    }
+    pub fn begin_chunk(&mut self, count: usize) -> Result<usize> {
+        if count == 0
+            || count > 4
+            || self.poisoned
+            || self.active
+            || self
+                .position
+                .checked_add(count)
+                .is_none_or(|end| end > self.plan.context())
+        {
+            return Err("session unavailable/active/chunk exceeds context".into());
         }
         self.operation = 0;
+        self.pending = count;
         self.active = true;
         Ok(self.position)
     }
@@ -137,7 +158,8 @@ impl Cursor {
             return Err("cannot commit incomplete token".into());
         }
         self.active = false;
-        self.position += 1;
+        self.position += self.pending;
+        self.pending = 0;
         Ok(())
     }
     pub fn abort(&mut self) {
@@ -155,6 +177,35 @@ mod tests {
             context,
         )
         .unwrap()
+    }
+    #[test]
+    fn chunk_reservation_is_atomic_and_bounded() {
+        let mut c = Cursor::new(plan(6));
+        for n in [0, 5, usize::MAX] {
+            assert!(c.begin_chunk(n).is_err());
+        }
+        assert_eq!(c.settled_position().unwrap(), 0);
+        assert_eq!(c.begin_chunk(4).unwrap(), 0);
+        assert!(c.begin().is_err());
+        assert!(c.commit().is_err());
+        while c.current().unwrap().is_some() {
+            c.complete_operation().unwrap();
+        }
+        c.commit().unwrap();
+        assert_eq!(c.settled_position().unwrap(), 4);
+        assert!(c.begin_chunk(3).is_err());
+        assert_eq!(c.begin_chunk(2).unwrap(), 4);
+        c.complete_operation().unwrap();
+        c.abort();
+        assert!(c.settled_position().is_err());
+        assert!(c.begin_chunk(1).is_err());
+        c.restore_position(4).unwrap();
+        assert_eq!(c.begin_chunk(2).unwrap(), 4);
+        while c.current().unwrap().is_some() {
+            c.complete_operation().unwrap();
+        }
+        c.commit().unwrap();
+        assert_eq!(c.settled_position().unwrap(), 6);
     }
     #[test]
     fn lifecycle_position_is_settled_only_after_valid_restore() {

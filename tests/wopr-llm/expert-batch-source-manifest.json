@@ -1,0 +1,33 @@
+{
+  "scope": "Additive batch32 gfx803 operator; preserves existing default exports and validated depth implementation. Relative source identities; model/fixtures/binaries excluded.",
+  "files": {
+    "kernels/llm/inkling2/mix.h": "f5a59126e7aa5cb3bf67c39034e6ec885e06e036756ea9154041e1fc9beef2dc",
+    "kernels/llm/inkling2/mix.hip": "a461b3b6e1d9def4fba0e071369d392e0fb5a021eb74c24c60e259a5fb9ed5e3",
+    "kernels/llm/inkling2/mix_depth_parallel.hip": "68e15632ad3e07d52c65f818fd210ffeb5bd5ad2e3a7e9b6f929a5364cc89c3b",
+    "kernels/llm/inkling2/primitives.h": "f43f025c5b36d505d1b2bc5201502da5169badf88477492cd52a46006042b440",
+    "kernels/llm/inkling2/primitives.hip": "745c868daf679a5ea572dda282dda7c2e6969a0ec6736722091a4f71f87e1394",
+    "kernels/llm/inkling2/quant.h": "40a544888ffd25aa7a914c6d9c99f31f27f426c0eaad794ec52339cb0a85076d",
+    "kernels/llm/inkling2/quant.hip": "2a64ce094930ee8e2a3943b159bbb4c0a93e75331e7a7eee192167def56cd81a",
+    "kernels/llm/inkling2/quant.hpp": "f7512579a2535ac3dfe45fecee602eccc3f330e515e940b25426c316929af27b",
+    "kernels/llm/inkling2/quant_batch32.h": "562b42d5efff630c2ad7f22ea1e4ffe52fcc872db0d15c64cb47ed5b9f9cba7c",
+    "kernels/llm/inkling2/quant_batch32.hip": "44bb3d916ac88b67abe114b9d5f35d3b6a9d56b6458eb0cf40516afea2f48e25",
+    "kernels/llm/inkling2/quant_typed32_dispatch.hip": "e1ccf1857aa2749fa72625b219f0db23010fad43fda89308afd64f9851349449",
+    "kernels/llm/inkling2/quant_wave32.h": "8faf312c4d56a5f7144e0d052128c2a4582fa4f2a40bbfdf808d02bae1326eb0",
+    "kernels/llm/inkling2/quant_wave32.hip": "bd613144e7d8e74a724e085517af2c3509a39b04e53aebf2eff5817bfa90124e",
+    "kernels/llm/inkling2/state.h": "6c0588c71ef3dd954784244895d68a9fe21823cd0a027243d3c708f74735120c",
+    "kernels/llm/inkling2/state.hip": "b28425f5db7900c35b9909cf0229ab8876a034a5c53a27914f28d496cea07f0b",
+    "kernels/llm/inkling2/state.hpp": "a27c88da980b2d43e6ccae77b7c085b1bf7ec1fcd6631e3dc2a2393c191eb958",
+    "kernels/ns/ns.h": "f5fb402b461f69a7946928988c79c6ce0efe0790c794b0ec6066eb577db17244",
+    "kernels/ns/ns.hip": "e40d6b19ffe89e3e351bb791c442a3dd148f29c31339289343fcc1a999fd77d2",
+    "kernels/ns/ns_internal.hpp": "cd22e1d582650e9ef724462d28444f3b3453f8e38d8db2b3f410f4fc22372a2c",
+    "reference/inkling2-mini/nvfp4-decoder-v1/quant_upstream_oracle.hpp": "9f5bbbc82d6360ac0ba74ee973c728b4b2bc89900c573a95b77c1a266071eb21",
+    "reference/inkling2-mini/nvfp4-decoder-v1/upstream_oracle.hpp": "ee85603b346ca88a559f72f7d46b678663ebd1f9984c52abbcc63ba455acd53d",
+    "reference/inkling2-mini/quant-batch-v1/oracle.cpp": "39c851f982f8562148965de19d6c99995b2daa65dd9af4614edcf663f5864599",
+    "reference/inkling2-mini/quant-batch-v1/prepare.py": "4e2f00af417f2c2661f194ec1317ea622ebb7bf6846ef10cbb56fa36834bba1e",
+    "tests/wopr-llm/build-inkling-expert-batch.sh": "0fbfcb04c780745df4fd3cf7d3a37bda80cf0678501db9c4670629eec8f43173",
+    "tests/wopr-llm/validate_inkling_batch32.py": "d5aa8660d366a8585a0c9edba022554df2e1c274e8db579e8b896c0f1e0710de"
+  },
+  "validated_runtime_sha256": "14f11de932424e7bf9fa22481382d632fdb26d20d97199a548f56822ef541ef2",
+  "validator_sha256": "d5aa8660d366a8585a0c9edba022554df2e1c274e8db579e8b896c0f1e0710de",
+  "validation_scope": "264 operator cases B1..4 exactwave/scalarcontrols/fullF64+36rejects. Fullmodel acceptance separate; no performance guarantee."
+}

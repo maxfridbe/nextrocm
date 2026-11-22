@@ -24,6 +24,11 @@ pub struct TextGraph {
     primitive: Primitives,
     quant: Quant,
     ops: Ops,
+    spare_work: Vec<BTreeMap<&'static str, DevBuf>>,
+    max_chunk: usize,
+    batch_work: BTreeMap<&'static str, DevBuf>,
+    batch_stats: crate::expert_batch::BatchStats,
+    batch_experts: bool,
     work: BTreeMap<&'static str, DevBuf>,
 }
 impl TextGraph {
@@ -75,22 +80,83 @@ impl TextGraph {
         embedding: crate::device::EmbeddingMode,
         mut cancel: impl FnMut() -> Result<()>,
     ) -> Result<Self> {
+        Self::load_with_prefill_policies(
+            model,
+            config,
+            gpu,
+            context,
+            host_available,
+            mode,
+            embedding,
+            1,
+            &mut cancel,
+        )
+    }
+    pub fn load_with_prefill_policies(
+        model: &Path,
+        config: &MiniConfig,
+        gpu: &Arc<Gpu>,
+        context: usize,
+        host_available: u64,
+        mode: crate::expert_cache::ExpertMode,
+        embedding: crate::device::EmbeddingMode,
+        max_chunk: usize,
+        mut cancel: impl FnMut() -> Result<()>,
+    ) -> Result<Self> {
+        Self::load_with_expert_prefill_policies(
+            model,
+            config,
+            gpu,
+            context,
+            host_available,
+            mode,
+            embedding,
+            max_chunk,
+            false,
+            &mut cancel,
+        )
+    }
+    pub fn load_with_expert_prefill_policies(
+        model: &Path,
+        config: &MiniConfig,
+        gpu: &Arc<Gpu>,
+        context: usize,
+        host_available: u64,
+        mode: crate::expert_cache::ExpertMode,
+        embedding: crate::device::EmbeddingMode,
+        max_chunk: usize,
+        batch_experts: bool,
+        mut cancel: impl FnMut() -> Result<()>,
+    ) -> Result<Self> {
+        if !matches!(max_chunk, 1 | 2 | 4) || max_chunk > context {
+            return Err("prefill capacity must be 1,2,4 and fit context".into());
+        }
         if context == 0 || context > 65536 {
             return Err("initial text graph context must be1..65536".into());
         }
         let primitive = Primitives::load(gpu)?;
         let quant = Quant::load(gpu)?;
+        if batch_experts {
+            quant.require_batch()?;
+        }
+        let batch_bytes = if batch_experts {
+            crate::expert_batch::scratch_bytes(max_chunk)?
+        } else {
+            0
+        };
         let ops = Ops::load(gpu)?;
         let plan = ExecutionPlan::new(config, context)?;
         let cursor = Cursor::new(plan.clone());
         let mut store = HostStore::open(model, host_available)?;
-        let weights = DeviceWeights::load_with_policies(
+        let weights = DeviceWeights::load_with_prefill_scratch(
             &mut store,
             gpu,
             &plan,
             host_available,
             mode,
             embedding,
+            max_chunk,
+            batch_bytes as u64,
             &mut cancel,
         )?;
         let sizes = [
@@ -145,13 +211,43 @@ impl TextGraph {
         let bytes = sizes.iter().try_fold(0usize, |sum, (_, n)| {
             sum.checked_add(n * 4).ok_or("activation size overflow")
         })?;
-        if bytes as u64 > weights.estimate.activation_reserve {
+        if bytes
+            .checked_mul(max_chunk)
+            .and_then(|n| n.checked_add(batch_bytes))
+            .ok_or("chunk activation overflow")? as u64
+            > weights.estimate.activation_reserve
+        {
             return Err("text work exceeds reserved activation budget".into());
         }
         let mut work = BTreeMap::new();
         for (name, n) in sizes {
             cancel()?;
             work.insert(name, DevBuf::new(gpu, n * 4).map_err(|e| e.0)?);
+        }
+        let mut spare_work = Vec::new();
+        for _ in 1..max_chunk {
+            let mut row = BTreeMap::new();
+            for (name, n) in sizes {
+                cancel()?;
+                row.insert(name, DevBuf::new(gpu, n * 4).map_err(|e| e.0)?);
+            }
+            spare_work.push(row);
+        }
+        let mut batch_work = BTreeMap::new();
+        if batch_experts {
+            for (name, width) in [
+                ("input", H),
+                ("gu", 2304),
+                ("situ", 1152),
+                ("down", H),
+                ("rank_bank", 8 * H),
+            ] {
+                cancel()?;
+                batch_work.insert(
+                    name,
+                    DevBuf::new(gpu, max_chunk * width * 4).map_err(|e| e.0)?,
+                );
+            }
         }
         Ok(Self {
             gpu: gpu.clone(),
@@ -163,7 +259,15 @@ impl TextGraph {
             quant,
             ops,
             work,
+            spare_work,
+            max_chunk,
+            batch_work,
+            batch_experts,
+            batch_stats: Default::default(),
         })
+    }
+    pub fn batch_stats(&self) -> crate::expert_batch::BatchStats {
+        self.batch_stats
     }
     pub fn expert_stats(&self) -> crate::expert_cache::ExpertStats {
         self.weights.expert_stats()
@@ -291,6 +395,82 @@ impl TextGraph {
             }
         }
     }
+    /// Visit-major chronological chunk. All output rows are computed. Any failure
+    /// after reservation poisons state; partial writes are never rolled back.
+    pub fn chunk(
+        &mut self,
+        tokens: &[u32],
+        mut cancel: impl FnMut() -> Result<()>,
+        mut observe: impl FnMut(usize, &Visit, &DevBuf) -> Result<()>,
+    ) -> Result<Vec<Vec<f32>>> {
+        if tokens.is_empty() || tokens.len() > self.max_chunk || tokens.iter().any(|&t| t >= 200058)
+        {
+            return Err("invalid chunk length or token".into());
+        }
+        cancel()?;
+        let pos = self.cursor.begin_chunk(tokens.len())?;
+        let mut rows = std::mem::take(&mut self.spare_work);
+        rows.insert(0, std::mem::take(&mut self.work));
+        let result = (|| {
+            let mut counts = [0usize; 4];
+            let mut preludes = [0usize; 4];
+            for (i, &token) in tokens.iter().enumerate() {
+                std::mem::swap(&mut self.work, &mut rows[i]);
+                let r = self.embed(token, &mut cancel);
+                std::mem::swap(&mut self.work, &mut rows[i]);
+                r?;
+            }
+            while let Some(op) = self.cursor.current()?.cloned() {
+                if self.batch_experts && tokens.len() > 1 {
+                    if let Operation::Layer(v) = op {
+                        self.expert_layer(
+                            v,
+                            pos,
+                            tokens.len(),
+                            &mut counts,
+                            &mut rows,
+                            &mut cancel,
+                            &mut observe,
+                        )?;
+                        self.cursor.complete_operation()?;
+                        continue;
+                    }
+                }
+                for i in 0..tokens.len() {
+                    cancel()?;
+                    std::mem::swap(&mut self.work, &mut rows[i]);
+                    let r = self.operation(
+                        op.clone(),
+                        pos + i,
+                        &mut counts[i],
+                        &mut preludes[i],
+                        &mut cancel,
+                        &mut |v, b| observe(i, v, b),
+                    );
+                    std::mem::swap(&mut self.work, &mut rows[i]);
+                    r?;
+                }
+                self.cursor.complete_operation()?;
+            }
+            let mut outputs = Vec::with_capacity(tokens.len());
+            for row in rows.iter_mut().take(tokens.len()) {
+                std::mem::swap(&mut self.work, row);
+                let r = self.logits(&mut cancel);
+                std::mem::swap(&mut self.work, row);
+                outputs.push(r?);
+            }
+            self.gpu.sync().map_err(|e| e.0)?;
+            cancel()?;
+            self.cursor.commit()?;
+            Ok(outputs)
+        })();
+        self.work = rows.remove(0);
+        self.spare_work = rows;
+        if result.is_err() {
+            self.cursor.abort();
+        }
+        result
+    }
     fn run(
         &mut self,
         token: u32,
@@ -298,6 +478,16 @@ impl TextGraph {
         cancel: &mut impl FnMut() -> Result<()>,
         observe: &mut impl FnMut(&Visit, &DevBuf) -> Result<()>,
     ) -> Result<Vec<f32>> {
+        self.embed(token, cancel)?;
+        let (mut count, mut prelude_count) = (0usize, 0usize);
+        while let Some(op) = self.cursor.current()?.cloned() {
+            cancel()?;
+            self.operation(op, pos, &mut count, &mut prelude_count, cancel, observe)?;
+            self.cursor.complete_operation()?;
+        }
+        self.logits(cancel)
+    }
+    fn embed(&mut self, token: u32, cancel: &mut impl FnMut() -> Result<()>) -> Result<()> {
         cancel()?;
         let row = self
             .weights
@@ -311,55 +501,9 @@ impl TextGraph {
             H,
             self.b("hidden"),
         )?;
-        let (mut count, mut prelude_count) = (0usize, 0usize);
-        while let Some(op) = self.cursor.current()?.cloned() {
-            cancel()?;
-            match op {
-                Operation::SavePrelude => {
-                    self.copy("prelude", 0, "hidden", 0, H)?;
-                    self.copy("prelude_blocks", 0, "blocks", 0, count * H)?;
-                    prelude_count = count;
-                }
-                Operation::ResetToPrelude { message_values, .. } => {
-                    if message_values != 2 || count != prelude_count + 2 {
-                        return Err("loop bank layout mismatch".into());
-                    }
-                    // Exclude prelude and the core's saved input: retain completed core block1
-                    // and partial block2 exactly as merged graph bank.assign(begin+prelude+1).
-                    self.copy("bank", 0, "blocks", (prelude_count + 1) * H, H)?;
-                    self.copy("bank", H, "hidden", 0, H)?;
-                    self.copy("hidden", 0, "prelude", 0, H)?;
-                    self.copy("blocks", 0, "prelude_blocks", 0, prelude_count * H)?;
-                    count = prelude_count;
-                }
-                Operation::Layer(v) => {
-                    self.layer(v, pos, &mut count, cancel)?;
-                    self.gpu.sync().map_err(|e| e.0)?;
-                    observe(&v, self.b("hidden"))?;
-                }
-                Operation::FinalResidualMixAndNorm => {
-                    self.pack_depth(count, self.b("hidden"))?;
-                    self.ops.mix(
-                        self.b("states"),
-                        self.weights.tensor("output_res_query.weight")?,
-                        count + 1,
-                        1,
-                        self.b("mixed"),
-                    )?;
-                    self.primitive.rms(
-                        self.b("mixed"),
-                        Some(self.weights.tensor("output_norm.weight")?),
-                        1,
-                        H,
-                        self.b("hidden"),
-                    )?;
-                    self.linear("output.weight", self.b("hidden"), self.b("logits"))?;
-                    self.primitive
-                        .softcap(self.b("logits"), 200058, self.b("logits"))?;
-                }
-            }
-            self.cursor.complete_operation()?;
-        }
+        Ok(())
+    }
+    fn logits(&self, cancel: &mut impl FnMut() -> Result<()>) -> Result<Vec<f32>> {
         let mut bytes = vec![0u8; 200058 * 4];
         self.b("logits").read(0, &mut bytes).map_err(|e| e.0)?;
         let logits: Vec<_> = bytes
@@ -371,6 +515,428 @@ impl TextGraph {
         }
         cancel()?;
         Ok(logits)
+    }
+    fn operation(
+        &mut self,
+        op: Operation,
+        pos: usize,
+        count: &mut usize,
+        prelude_count: &mut usize,
+        cancel: &mut impl FnMut() -> Result<()>,
+        observe: &mut impl FnMut(&Visit, &DevBuf) -> Result<()>,
+    ) -> Result<()> {
+        match op {
+            Operation::SavePrelude => {
+                self.copy("prelude", 0, "hidden", 0, H)?;
+                self.copy("prelude_blocks", 0, "blocks", 0, *count * H)?;
+                *prelude_count = *count;
+            }
+            Operation::ResetToPrelude { message_values, .. } => {
+                if message_values != 2 || *count != *prelude_count + 2 {
+                    return Err("loop bank layout mismatch".into());
+                }
+                // Exclude prelude and the core's saved input: retain completed core block1
+                // and partial block2 exactly as merged graph bank.assign(begin+prelude+1).
+                self.copy("bank", 0, "blocks", (*prelude_count + 1) * H, H)?;
+                self.copy("bank", H, "hidden", 0, H)?;
+                self.copy("hidden", 0, "prelude", 0, H)?;
+                self.copy("blocks", 0, "prelude_blocks", 0, *prelude_count * H)?;
+                *count = *prelude_count;
+            }
+            Operation::Layer(v) => {
+                self.layer(v, pos, count, cancel)?;
+                self.gpu.sync().map_err(|e| e.0)?;
+                observe(&v, self.b("hidden"))?;
+            }
+            Operation::FinalResidualMixAndNorm => {
+                self.pack_depth(*count, self.b("hidden"))?;
+                self.ops.mix(
+                    self.b("states"),
+                    self.weights.tensor("output_res_query.weight")?,
+                    *count + 1,
+                    1,
+                    self.b("mixed"),
+                )?;
+                self.primitive.rms(
+                    self.b("mixed"),
+                    Some(self.weights.tensor("output_norm.weight")?),
+                    1,
+                    H,
+                    self.b("hidden"),
+                )?;
+                self.linear("output.weight", self.b("hidden"), self.b("logits"))?;
+                self.primitive
+                    .softcap(self.b("logits"), 200058, self.b("logits"))?;
+            }
+        }
+        Ok(())
+    }
+    fn expert_prefix(
+        &mut self,
+        v: Visit,
+        pos: usize,
+        count: &mut usize,
+        cancel: &mut impl FnMut() -> Result<()>,
+    ) -> Result<[i32; 8]> {
+        cancel()?;
+        let l = v.physical_layer;
+        let local = v.attention == Attention::Sliding;
+        let name = |suffix: &str| format!("blk.{l}.{suffix}.weight");
+        self.copy("input", 0, "hidden", 0, H)?;
+        if v.previous_pass_messages {
+            self.messages(l)?;
+        }
+        if l == 0 {
+            self.copy("attnmix", 0, "hidden", 0, H)?;
+        } else {
+            self.pack_depth(*count, self.b("hidden"))?;
+            self.ops.mix(
+                self.b("states"),
+                self.weights.tensor(&name("attn_res_query"))?,
+                *count + 1,
+                if local { 1 } else { 3 },
+                self.b("attnmix"),
+            )?;
+        }
+        for j in 0..3 {
+            let raw = self.view("attnmix", if local { 0 } else { j * H }, H)?;
+            let norm = self.view("norms", j * H, H)?;
+            let input = if v.previous_pass_messages {
+                let message = self.view("messages", j * H, H)?;
+                self.control(
+                    l,
+                    ["attn", "k", "v"][j],
+                    &raw,
+                    &message,
+                    self.b("controlled"),
+                )?;
+                self.b("controlled")
+            } else {
+                &raw
+            };
+            let norm_name = if local {
+                "attn_norm"
+            } else {
+                ["attn_q_inp_norm", "attn_k_inp_norm", "attn_v_inp_norm"][j]
+            };
+            self.primitive.rms(
+                input,
+                Some(self.weights.tensor(&name(norm_name))?),
+                1,
+                H,
+                &norm,
+            )?;
+        }
+        let (qin, kin, vin) = (
+            self.view("norms", 0, H)?,
+            self.view("norms", H, H)?,
+            self.view("norms", 2 * H, H)?,
+        );
+        self.linear(&name("attn_q"), &qin, self.b("qraw"))?;
+        self.linear(&name("attn_k"), &kin, self.b("kraw"))?;
+        self.linear(&name("attn_v"), &vin, self.b("vraw"))?;
+        self.linear(&name("attn_rel"), &qin, self.b("rraw"))?;
+        if !local {
+            self.linear(&name("attn_k_conv_proj"), &kin, self.b("dynk"))?;
+            self.linear(&name("attn_v_conv_proj"), &vin, self.b("dynv"))?;
+        }
+        let slot = self.weights.state.layout.slots[v.ordinal].clone();
+        let history = |offset: usize, n: usize| {
+            self.weights
+                .state
+                .history
+                .view((slot.history_offset + offset * 3) * 4, n * 3 * 4)
+                .map_err(|e| e.0)
+        };
+        self.ops.conv(
+            self.b("kraw"),
+            self.weights.tensor(&name("attn_k_conv"))?,
+            if local { None } else { Some(self.b("dynk")) },
+            8,
+            1024,
+            &history(0, 1024)?,
+            self.b("kc"),
+        )?;
+        self.ops.conv(
+            self.b("vraw"),
+            self.weights.tensor(&name("attn_v_conv"))?,
+            if local { None } else { Some(self.b("dynv")) },
+            8,
+            1024,
+            &history(1024, 1024)?,
+            self.b("vc"),
+        )?;
+        self.primitive.clip(
+            self.b("qraw"),
+            Some(self.weights.tensor(&name("attn_q_clip"))?),
+            24,
+            128,
+            22.627416997969522f32,
+            self.b("q"),
+        )?;
+        self.primitive.clip(
+            self.b("kc"),
+            None,
+            8,
+            128,
+            22.627416997969522f32,
+            self.b("k"),
+        )?;
+        self.primitive
+            .rms(self.b("vc"), None, 8, 128, self.b("v"))?;
+        self.primitive.clip(
+            self.b("rraw"),
+            Some(self.weights.tensor(&name("attn_rel_clip"))?),
+            24,
+            16,
+            8.0,
+            self.b("r"),
+        )?;
+        if !local {
+            // Explicit F32 source formula; transcendental order still needs full-graph gate.
+            let ratio = ((pos + 1) as f32 / 8192.0f32).max(1.0);
+            let tau = 1.0f32 + 0.1f32 * ratio.ln();
+            self.ops.scale(self.b("q"), 3072, tau, self.b("q"))?;
+            self.ops.scale(self.b("r"), 384, tau, self.b("r"))?;
+        }
+        let keys = self
+            .weights
+            .state
+            .kv
+            .view(slot.key_offset * 4, slot.capacity * 1024 * 4)
+            .map_err(|e| e.0)?;
+        let vals = self
+            .weights
+            .state
+            .kv
+            .view(slot.value_offset * 4, slot.capacity * 1024 * 4)
+            .map_err(|e| e.0)?;
+        let row = slot.write_row(pos, self.plan.context())?;
+        keys.copy_within(row * 4096, self.b("k"), 0, 4096)
+            .map_err(|e| e.0)?;
+        vals.copy_within(row * 4096, self.b("v"), 0, 4096)
+            .map_err(|e| e.0)?;
+        self.linear(&name("attn_sink_proj"), &qin, self.b("sink"))?;
+        self.ops.attention(
+            self.b("q"),
+            &keys,
+            &vals,
+            self.b("r"),
+            self.weights.tensor(&name("attn_rel_bias"))?,
+            self.b("sink"),
+            pos,
+            slot.capacity,
+            local,
+            self.b("attn"),
+            self.b("scores"),
+        )?;
+        self.linear(&name("attn_gate"), &qin, self.b("gate"))?;
+        self.primitive
+            .gate(self.b("attn"), self.b("gate"), 3072, self.b("gated"))?;
+        self.linear(&name("attn_output"), self.b("gated"), self.b("projected"))?;
+        self.ops.conv(
+            self.b("projected"),
+            self.weights.tensor(&name("attn_post_conv"))?,
+            None,
+            1,
+            H,
+            &history(2048, H)?,
+            self.b("attnconv"),
+        )?;
+        if v.append_input_residual_block {
+            if *count >= 4 {
+                return Err("residual block overflow".into());
+            }
+            self.copy("blocks", *count * H, "input", 0, H)?;
+            *count += 1;
+            self.copy("ffinput", 0, "attnconv", 0, H)?;
+        } else {
+            self.ops
+                .add(self.b("input"), self.b("attnconv"), H, self.b("ffinput"))?;
+        }
+        self.pack_depth(*count, self.b("ffinput"))?;
+        self.ops.mix(
+            self.b("states"),
+            self.weights.tensor(&name("ffn_res_query"))?,
+            *count + 1,
+            1,
+            self.b("mixed"),
+        )?;
+        let input = if v.previous_pass_messages {
+            let message = self.view("messages", 3 * H, H)?;
+            self.control(l, "mlp", self.b("mixed"), &message, self.b("controlled"))?;
+            self.b("controlled")
+        } else {
+            self.b("mixed")
+        };
+        self.primitive.rms(
+            input,
+            Some(self.weights.tensor(&name("ffn_norm"))?),
+            1,
+            H,
+            self.b("ffnorm"),
+        )?;
+        self.linear(&name("ffn_gate_inp"), self.b("ffnorm"), self.b("router"))?;
+        self.ops.router(
+            self.b("router"),
+            self.weights.tensor(&format!("blk.{l}.exp_probs_b.bias"))?,
+            self.b("ids"),
+            self.b("routing"),
+        )?;
+        let mut raw = [0u8; 32];
+        self.b("ids").read(0, &mut raw).map_err(|e| e.0)?;
+        Ok(std::array::from_fn(|i| {
+            i32::from_le_bytes(raw[i * 4..i * 4 + 4].try_into().unwrap())
+        }))
+    }
+    fn expert_tail(
+        &mut self,
+        v: Visit,
+        token: usize,
+        cancel: &mut impl FnMut() -> Result<()>,
+    ) -> Result<()> {
+        let l = v.physical_layer;
+        let name = |suffix: &str| format!("blk.{l}.{suffix}.weight");
+        let slot = &self.weights.state.layout.slots[v.ordinal];
+        self.b("sum").fill(0).map_err(|e| e.0)?;
+        for rank in 0..8 {
+            cancel()?;
+            let down = self.batch_work["rank_bank"]
+                .view((token * 8 + rank) * H * 4, H * 4)
+                .map_err(|e| e.0)?;
+            let weight = self.b("routing").view(rank * 4, 4).map_err(|e| e.0)?;
+            self.ops.axpy(&down, &weight, H, self.b("sum"))?;
+        }
+        let history = self
+            .weights
+            .state
+            .history
+            .view((slot.history_offset + (2048 + H) * 3) * 4, H * 3 * 4)
+            .map_err(|e| e.0)?;
+        self.ops.conv(
+            self.b("sum"),
+            self.weights.tensor(&name("ffn_post_conv"))?,
+            None,
+            1,
+            H,
+            &history,
+            self.b("ffconv"),
+        )?;
+        self.ops
+            .add(self.b("ffinput"), self.b("ffconv"), H, self.b("hidden"))?;
+        Ok(())
+    }
+    fn expert_layer(
+        &mut self,
+        v: Visit,
+        pos: usize,
+        n: usize,
+        counts: &mut [usize; 4],
+        rows: &mut [BTreeMap<&'static str, DevBuf>],
+        cancel: &mut impl FnMut() -> Result<()>,
+        observe: &mut impl FnMut(usize, &Visit, &DevBuf) -> Result<()>,
+    ) -> Result<()> {
+        let mut ids = Vec::with_capacity(n);
+        for i in 0..n {
+            std::mem::swap(&mut self.work, &mut rows[i]);
+            let r = self.expert_prefix(v, pos + i, &mut counts[i], cancel);
+            std::mem::swap(&mut self.work, &mut rows[i]);
+            ids.push(r?);
+        }
+        let groups = crate::expert_batch::groups(&ids)?;
+        self.batch_stats.visits += 1;
+        self.batch_stats.logical_selections += (n * 8) as u64;
+        let (gu_type, down_type) = if v.physical_layer < 20 {
+            (GType::NVFP4, GType::NVFP4)
+        } else {
+            (GType::Q5K, GType::Q8_0)
+        };
+        for group in groups {
+            cancel()?;
+            let b = group.members.len();
+            for (j, &(token, _)) in group.members.iter().enumerate() {
+                cancel()?;
+                self.batch_work["input"]
+                    .copy_within(j * H * 4, &rows[token]["ffnorm"], 0, H * 4)
+                    .map_err(|e| e.0)?;
+            }
+            let batch = &self.batch_work;
+            let quant = &self.quant;
+            let primitive = &self.primitive;
+            // Both callbacks borrow cancellation only for an individual check.
+            // No RefCell borrow survives a launch or the nested pair callback.
+            let cancel_cell = std::cell::RefCell::new(&mut *cancel);
+            self.weights.with_expert(
+                &mut self.store,
+                &v,
+                group.expert,
+                &mut || (*cancel_cell.borrow_mut())(),
+                |pair| {
+                    (*cancel_cell.borrow_mut())()?;
+                    quant.matvec_batch(
+                        &pair.gate_up,
+                        gu_type,
+                        2304,
+                        H,
+                        &batch["input"],
+                        pair.gate_scale.as_ref(),
+                        &batch["gu"],
+                        b,
+                    )?;
+                    for j in 0..b {
+                        (*cancel_cell.borrow_mut())()?;
+                        let gate = batch["gu"].view(j * 2304 * 4, 1152 * 4).map_err(|e| e.0)?;
+                        let up = batch["gu"]
+                            .view((j * 2304 + 1152) * 4, 1152 * 4)
+                            .map_err(|e| e.0)?;
+                        let situ = batch["situ"]
+                            .view(j * 1152 * 4, 1152 * 4)
+                            .map_err(|e| e.0)?;
+                        primitive.situ(&gate, &up, 1152, &situ)?;
+                    }
+                    (*cancel_cell.borrow_mut())()?;
+                    quant.matvec_batch(
+                        &pair.down,
+                        down_type,
+                        H,
+                        1152,
+                        &batch["situ"],
+                        pair.down_scale.as_ref(),
+                        &batch["down"],
+                        b,
+                    )?;
+                    for (j, &(token, rank)) in group.members.iter().enumerate() {
+                        (*cancel_cell.borrow_mut())()?;
+                        batch["rank_bank"]
+                            .copy_within(
+                                (token * 8 + rank) * H * 4,
+                                &batch["down"],
+                                j * H * 4,
+                                H * 4,
+                            )
+                            .map_err(|e| e.0)?;
+                    }
+                    Ok(())
+                },
+            )?;
+            cancel()?;
+            self.batch_stats.groups += 1;
+            self.batch_stats.group_sizes[b - 1] += 1;
+            self.batch_stats.gu_calls += 1;
+            self.batch_stats.down_calls += 1;
+        }
+        for i in 0..n {
+            cancel()?;
+            std::mem::swap(&mut self.work, &mut rows[i]);
+            let r = (|| {
+                self.expert_tail(v, i, cancel)?;
+                self.gpu.sync().map_err(|e| e.0)?;
+                observe(i, &v, self.b("hidden"))
+            })();
+            std::mem::swap(&mut self.work, &mut rows[i]);
+            r?;
+        }
+        Ok(())
     }
     fn layer(
         &mut self,

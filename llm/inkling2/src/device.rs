@@ -102,6 +102,53 @@ impl DeviceWeights {
         embedding: EmbeddingMode,
         mut check: impl FnMut() -> Result<()>,
     ) -> Result<Self> {
+        Self::load_with_prefill_policies(
+            store,
+            gpu,
+            plan,
+            host_available,
+            mode,
+            embedding,
+            1,
+            &mut check,
+        )
+    }
+    pub fn load_with_prefill_policies(
+        store: &mut HostStore,
+        gpu: &Arc<Gpu>,
+        plan: &ExecutionPlan,
+        host_available: u64,
+        mode: ExpertMode,
+        embedding: EmbeddingMode,
+        rows: usize,
+        mut check: impl FnMut() -> Result<()>,
+    ) -> Result<Self> {
+        Self::load_with_prefill_scratch(
+            store,
+            gpu,
+            plan,
+            host_available,
+            mode,
+            embedding,
+            rows,
+            0,
+            &mut check,
+        )
+    }
+    pub fn load_with_prefill_scratch(
+        store: &mut HostStore,
+        gpu: &Arc<Gpu>,
+        plan: &ExecutionPlan,
+        host_available: u64,
+        mode: ExpertMode,
+        embedding: EmbeddingMode,
+        rows: usize,
+        scratch: u64,
+        mut check: impl FnMut() -> Result<()>,
+    ) -> Result<Self> {
+        if !matches!(rows, 1 | 2 | 4) {
+            return Err("prefill capacity must be 1,2,4".into());
+        }
         if gpu.raw().is_null() {
             return Err("device weights require a real GPU".into());
         }
@@ -115,8 +162,16 @@ impl DeviceWeights {
             .1
             .ok_or("device free memory unavailable")?;
         let weights = Weights::read(store.file())?;
-        let estimate =
-            Estimate::text_with_policies(&weights, plan, 1, host_available, free, mode, embedding)?;
+        let estimate = Estimate::text_with_scratch(
+            &weights,
+            plan,
+            rows,
+            host_available,
+            free,
+            mode,
+            embedding,
+            scratch,
+        )?;
         let entries: Vec<_> = store
             .file()
             .tensors

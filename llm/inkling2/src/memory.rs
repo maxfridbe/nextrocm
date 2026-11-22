@@ -70,6 +70,27 @@ impl Estimate {
         mode: crate::expert_cache::ExpertMode,
         embedding: crate::device::EmbeddingMode,
     ) -> Result<Self> {
+        Self::text_with_scratch(
+            w,
+            p,
+            prefill_rows,
+            host_available,
+            device_free,
+            mode,
+            embedding,
+            0,
+        )
+    }
+    pub fn text_with_scratch(
+        w: &Weights<'_>,
+        p: &ExecutionPlan,
+        prefill_rows: usize,
+        host_available: u64,
+        device_free: u64,
+        mode: crate::expert_cache::ExpertMode,
+        embedding: crate::device::EmbeddingMode,
+        scratch: u64,
+    ) -> Result<Self> {
         if prefill_rows == 0 || prefill_rows > 32 || prefill_rows > p.context() {
             return Err("planning prefill rows must be 1..min(32,context)".into());
         }
@@ -106,6 +127,7 @@ impl Estimate {
             )?,
             16 * 1024 * 1024,
         )?;
+        let activation_reserve = add(activation_reserve, scratch)?;
         let (expert_cache, expert_host_pair) = mode.extra_bytes(expert_pair)?;
         let tracked = [
             embedding_row,

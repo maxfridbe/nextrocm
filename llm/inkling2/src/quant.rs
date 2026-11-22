@@ -29,10 +29,27 @@ type Matvec = unsafe extern "C" fn(
     *mut f32,
     i64,
 ) -> c_int;
+type BatchMatvec = unsafe extern "C" fn(
+    *mut c_void,
+    *const c_void,
+    c_int,
+    c_int,
+    c_int,
+    i64,
+    *const f32,
+    i64,
+    i64,
+    *const f32,
+    *mut f32,
+    i64,
+    i64,
+    c_int,
+) -> c_int;
 pub struct Quant {
     gpu: Arc<Gpu>,
     decode: Decode,
     matvec: Matvec,
+    batch: Option<BatchMatvec>,
 }
 impl Quant {
     pub fn load(gpu: &Arc<Gpu>) -> Result<Self> {
@@ -45,11 +62,77 @@ impl Quant {
         if d.is_null() || m.is_null() {
             return Err("missing required Inkling quant ABI".into());
         }
+        let batch = lib.symbol("ni2_quant_matvec_batch32");
         // SAFETY: exact kernels/llm/inkling2/quant.h declarations; process owns library.
         Ok(Self {
             gpu: gpu.clone(),
+            batch: if batch.is_null() {
+                None
+            } else {
+                Some(unsafe { std::mem::transmute::<*mut c_void, BatchMatvec>(batch) })
+            },
             decode: unsafe { std::mem::transmute::<*mut c_void, Decode>(d) },
             matvec: unsafe { std::mem::transmute::<*mut c_void, Matvec>(m) },
+        })
+    }
+    pub fn require_batch(&self) -> Result<()> {
+        self.batch
+            .map(|_| ())
+            .ok_or_else(|| "missing explicit expert-batch ABI".into())
+    }
+    pub fn matvec_batch(
+        &self,
+        w: &DevBuf,
+        ty: GType,
+        rows: usize,
+        cols: usize,
+        x: &DevBuf,
+        scale: Option<&DevBuf>,
+        out: &DevBuf,
+        batch: usize,
+    ) -> Result<()> {
+        let f = self.batch.ok_or("missing expert-batch ABI")?;
+        if !(1..=4).contains(&batch) {
+            return Err("expert batch must be1..4".into());
+        }
+        let stride = geometry(ty, rows, cols)?;
+        self.buffer(w, rows * stride)?;
+        self.buffer(
+            x,
+            batch
+                .checked_mul(cols)
+                .and_then(|n| n.checked_mul(4))
+                .ok_or("batch input overflow")?,
+        )?;
+        self.buffer(
+            out,
+            batch
+                .checked_mul(rows)
+                .and_then(|n| n.checked_mul(4))
+                .ok_or("batch output overflow")?,
+        )?;
+        if let Some(s) = scale {
+            self.buffer(s, 4)?;
+        }
+        // SAFETY: exact14arg ABI, bounded geometry/B1..4, checked same-device spans;
+        // packed matrix rows, contiguous token rows; C guards aliases and device scale.
+        self.finish(unsafe {
+            f(
+                self.gpu.raw(),
+                w.ptr(),
+                ty.code() as c_int,
+                rows as c_int,
+                cols as c_int,
+                stride as i64,
+                x.ptr().cast(),
+                1,
+                cols as i64,
+                scale.map_or(std::ptr::null(), |s| s.ptr().cast()),
+                out.ptr().cast(),
+                1,
+                rows as i64,
+                batch as c_int,
+            )
         })
     }
     fn buffer(&self, b: &DevBuf, bytes: usize) -> Result<()> {

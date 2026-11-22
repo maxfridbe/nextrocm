@@ -1,5 +1,7 @@
 # Inkling Mini performance on the RX 550
 
+For the subsequently validated explicit `--inkling-prefill 4` option, see [INKLING-PREFILL.md](INKLING-PREFILL.md). Its matched slow-link study reduced prompt-processing time by 12.78%; default chunk size remains 1. The measurements and v2 command below describe the earlier configuration and remain historical results.
+
 The selected combination now measures **1.455 tokens/s** (repeat range **1.453–1.458**) on the fixed 18-prompt-token / 32-generation-step workload. It remains below Mycroft's measured **1.844 tokens/s** (about 79% of that rate). Both combined runs and their control had PCIe **8 GT/s ×8** throughout sampled timed phases. These are bounded workload results, not a general throughput guarantee. Final closure passed: the model hash was unchanged, driver mode was `auto`, GPU busy was 0%, and no KFD compute clients remained.
 
 Earlier automatic-mode measurements improved from **0.468 to 0.702 tokens/s**, but those ran with a slower PCIe link. Do not attribute the entire difference between 0.702 and the new result to software changes.
