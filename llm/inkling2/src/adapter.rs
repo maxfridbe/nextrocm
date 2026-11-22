@@ -308,7 +308,7 @@ fn load_prefill_impl<'g>(
     let cfg = MiniConfig::from_official_json(include_bytes!("../assets/mini-config.json"))
         .map_err(err)?;
     let gpu = gpus[0].clone();
-    let graph = TextGraph::load_with_expert_prefill_policies(
+    let graph = TextGraph::load_with_dense_prefill_policies(
         &f.paths[0],
         &cfg,
         &gpu,
@@ -317,6 +317,7 @@ fn load_prefill_impl<'g>(
         mode,
         embedding,
         feed_chunk,
+        feed_chunk > 1,
         feed_chunk > 1,
         || {
             if cancel.load(Ordering::Relaxed) {
@@ -328,7 +329,7 @@ fn load_prefill_impl<'g>(
     )
     .map_err(err)?;
     let state_bytes = graph.state_bytes();
-    log(format!("Inkling native F32 text: one session, context{context}, packed resident{bytes}, expert policy {mode:?}, embedding {embedding:?}, plain-feed chunk{feed_chunk}, expert batch{} (feed_until serial); no vision/tools/draft", feed_chunk > 1));
+    log(format!("Inkling native F32 text: one session, context{context}, packed resident{bytes}, expert policy {mode:?}, embedding {embedding:?}, plain-feed chunk{feed_chunk}, expert batch{}, dense batch{} (feed_until serial); no vision/tools/draft", feed_chunk > 1, feed_chunk > 1));
     Ok(Box::new(Model {
         gpu,
         live: Mutex::new(Live {

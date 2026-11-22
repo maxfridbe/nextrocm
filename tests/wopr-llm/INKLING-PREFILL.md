@@ -1,8 +1,42 @@
 # Inkling prompt processing on the RX 550
 
-**The explicit chunk-4 path has completed validation in the WOPR test silo.** Expert batching reduced prompt-processing time by **12.78%** on the measured 18-prompt-token / 32-generation-step workload. The longer 80-token comparisons and integrated adapter lifecycle checks have passed for chunks 2 and 4. The normal CLI independent audit and final cleanup/identity closure also passed. Default chunk size remains 1. Earlier measurements and commands remain documented in [INKLING-PERFORMANCE.md](INKLING-PERFORMANCE.md).
+## Selected dense configuration
 
-## Measured result
+The explicit chunk-4 dense-plus-expert path has completed numerical, state, adapter, normal-CLI, and final cleanup validation in this test silo. Default chunk size remains 1; this is not a production deployment or an HTTP throughput claim.
+
+A subsequent four-leg baseline/candidate/candidate/baseline study compared **expert batching at chunk 4** with **expert plus dense batching at chunk 4**. All eight sampled timed phases reported PCIe **2.5 GT/s ×8**, with equal expert-cache counters and the same executable/runtime. Each leg used a fresh graph and the fixed 18-prompt-token / 32-generation-step workload.
+
+| Configuration | Median prompt time | Prompt tokens/s | Median generation time | Median combined time |
+|---|---:|---:|---:|---:|
+| Expert batching, chunk 4 | 17.773 s | 1.013 | 36.650 s | 54.423 s |
+| Expert plus dense batching, chunk 4 | 16.955 s | 1.062 | 36.620 s | 53.575 s |
+
+Dense batching reduced prompt time by **4.60%**, increased prompt throughput by **4.82%**, and reduced combined time by **1.56%**. Generation was essentially unchanged. This is a separate study from the chunk-1/2/4 comparison below: do not add its percentages to the earlier gains or treat their controls as one continuous experiment. Mycroft's historical 1.736 prompt tokens/s remains unbeaten. These observations cover this fixed workload, not general prompt throughput.
+
+The selected extension batches seven large Q8 projections: Q, K, V, relative-position R, attention gate, attention output O, and the final output head. Smaller projections remain scalar. It uses the same `14f11de932424e7bf9fa22481382d632fdb26d20d97199a548f56822ef541ef2` runtime. Per-row normalization, chronological convolution/KV/attention updates, and expert rank accumulation remain unchanged. The final head computes all 201,024 padded rows before softcapping and returning the original 200,058-token vocabulary.
+
+Two reusable device buffers add **3,290,112 bytes for chunk 4**, bringing the context-4096 host-embedding/896 MiB segmented-cache plan to **3,980,735,248 required free device bytes**, including the unchanged 1 GiB admission margin. All scratch is accounted for before weight allocation. The ABBA study reached **3.220 GB sampled DRM allocation**; actual admission and the external 3.75 GiB cap remain required.
+
+The dense candidate passed both 98-array reference checks, all 3,920 arrays and 63 greedy decisions in the 80-token regression, and the synthetic full-state/ring/cancellation probe. Both chunk-2 and chunk-4 integrated adapters passed all 21 lifecycle checks with dense batching active, including 400,116 saved logits matching the validated scalar path and zero remaining tracked allocations. The built executable path is `$suite/bin/nextrocm-inkling-dense-v1`, SHA-256 `1511f0fa7c83ceff458b8af4a70396f2d517c2b9dd5d27f561898bc6e20ad933` (local binary rehash verified). The normal CLI request returned `Hello!` and passed independent audit. Final closure verified the unchanged full model hash, all eight integrated source hashes, exact executable/runtime identities, automatic driver mode, 0% GPU busy, and no remaining KFD compute clients. Default chunk size remains 1, and `feed_until` stays serial: no HTTP speedup is established.
+
+Retained study receipts: `inkling-prefill-dense-v1/dense-abba-ampere-summary-v1.json`, its independent audit, `dense-state-avicenna-audit.json`, `normal-cli-independent-aristotle-audit.json`, and `inkling-dense-final-close-v1.json`.
+
+The selected CLI reported **14.80 s for 16 prompt tokens** and **52.60 s for 46 generated nonterminal tokens**, approximately **0.87 tokens/s**, with dense batching active. Generated tokens include reasoning/control tokens; this request still produced reasoning despite `--effort none`. The CLI run reached **3.219 GB sampled DRM allocation**. Whole-run link observations mixed 8 and 2.5 GT/s without prompt/generation phase boundaries. This 16/46 smoke request is distinct from the matched 18/32 study. Do not infer a speedup by comparing it with the historical CLI timings; the matched ABBA comparison establishes the 4.60% prompt-time reduction.
+
+Validated current command:
+
+```sh
+suite=/var/home/maxfridbe/nextrocm-gpu-suite-v1
+model=/var/home/maxfridbe/inkling2-reference-v1/assets/Inkling-2-Mini-UD-Q4_K_M.gguf
+NEXTROCM_LIB="$suite/inkling-expert-batch-build-v1/libnextrocm-inkling-expert-batch.so" \
+  "$suite/bin/nextrocm-inkling-dense-v1" llm generate "$model" \
+  --prompt 'Say hello.' --max 64 --ctx 4096 --gpu 0 \
+  --temp 0 --top-p 1 --seed 1 --effort none \
+  --inkling-host-embedding --expert-gib .875 --inkling-cache-policy segmented \
+  --inkling-prefill 4
+```
+
+## Earlier expert-batching study
 
 The six-leg comparison used chunk sizes 1, 2, and 4, each twice, with fresh graphs. All sampled timed phases reported PCIe **2.5 GT/s ×8**, in automatic driver mode. The table reports the audited per-mode aggregate times from this study.
 
@@ -24,9 +58,9 @@ The explicit CLI opt-in is `--inkling-prefill 4`; supported values are 1, 2, and
 
 Only the ordinary prompt-feed path uses this batching. The cancellation-aware `feed_until` path remains serial. These measurements therefore establish no HTTP prompt-processing speedup. Decode behavior and default selection are unchanged.
 
-At context 4096, the reviewed chunk-4 expert-batched plan requires **3,977,445,136 free device bytes**, including the unchanged 1 GiB admission margin. The extra expert scratch is 423,936 bytes. Actual allocation admission and the external 3.75 GiB sampled-allocation cap remain required; an estimate alone does not prove fit.
+For the earlier expert-only path at context 4096, the reviewed chunk-4 expert-batched plan requires **3,977,445,136 free device bytes**, including the unchanged 1 GiB admission margin. The extra expert scratch is 423,936 bytes. Actual allocation admission and the external 3.75 GiB sampled-allocation cap remain required; an estimate alone does not prove fit.
 
-## Completed CLI request
+## Historical expert-only CLI request
 
 The following command returned `Hello!` on stdout with expert batching enabled. The independent CLI audit passed: the watchdog recorded exit 0 and an empty process group. Final closure verified the unchanged model hash, exact executable/runtime hashes, automatic driver mode, 0% GPU busy, and no remaining KFD compute clients.
 

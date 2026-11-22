@@ -18,3 +18,7 @@ diagnostic-state = []
 [[example]]
 name = "wopr_expert_state"
 required-features = ["diagnostic-state"]
+
+[[example]]
+name = "wopr_dense_state"
+required-features = ["diagnostic-state"]

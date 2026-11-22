@@ -15,6 +15,19 @@ use nextrocm_engine_core::{DevBuf, Gpu};
 use nextrocm_gguf::GType;
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 const H: usize = 2304;
+/// Q,K,V,R,gate,O,output; scalar execution does not increment these counters.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DenseStats {
+    pub family_calls: [u64; 7],
+    pub logical_vectors: [u64; 7],
+}
+fn dense_scratch_bytes(rows: usize) -> Result<usize> {
+    if !(1..=4).contains(&rows) {
+        return Err("dense batch rows outside1..4".into());
+    }
+    rows.checked_mul((4608 + 201024) * 4)
+        .ok_or_else(|| "dense scratch overflow".into())
+}
 pub struct TextGraph {
     gpu: Arc<Gpu>,
     store: HostStore,
@@ -29,6 +42,9 @@ pub struct TextGraph {
     batch_work: BTreeMap<&'static str, DevBuf>,
     batch_stats: crate::expert_batch::BatchStats,
     batch_experts: bool,
+    dense_batch: bool,
+    dense_work: BTreeMap<&'static str, DevBuf>,
+    dense_stats: DenseStats,
     work: BTreeMap<&'static str, DevBuf>,
 }
 impl TextGraph {
@@ -128,6 +144,36 @@ impl TextGraph {
         batch_experts: bool,
         mut cancel: impl FnMut() -> Result<()>,
     ) -> Result<Self> {
+        Self::load_with_dense_prefill_policies(
+            model,
+            config,
+            gpu,
+            context,
+            host_available,
+            mode,
+            embedding,
+            max_chunk,
+            batch_experts,
+            false,
+            &mut cancel,
+        )
+    }
+    pub fn load_with_dense_prefill_policies(
+        model: &Path,
+        config: &MiniConfig,
+        gpu: &Arc<Gpu>,
+        context: usize,
+        host_available: u64,
+        mode: crate::expert_cache::ExpertMode,
+        embedding: crate::device::EmbeddingMode,
+        max_chunk: usize,
+        batch_experts: bool,
+        dense_batch: bool,
+        mut cancel: impl FnMut() -> Result<()>,
+    ) -> Result<Self> {
+        if dense_batch && !batch_experts {
+            return Err("dense batching requires explicit expert batch control".into());
+        }
         if !matches!(max_chunk, 1 | 2 | 4) || max_chunk > context {
             return Err("prefill capacity must be 1,2,4 and fit context".into());
         }
@@ -144,6 +190,14 @@ impl TextGraph {
         } else {
             0
         };
+        let dense_bytes = if dense_batch {
+            dense_scratch_bytes(max_chunk)?
+        } else {
+            0
+        };
+        let batch_bytes = batch_bytes
+            .checked_add(dense_bytes)
+            .ok_or("total scratch overflow")?;
         let ops = Ops::load(gpu)?;
         let plan = ExecutionPlan::new(config, context)?;
         let cursor = Cursor::new(plan.clone());
@@ -249,6 +303,16 @@ impl TextGraph {
                 );
             }
         }
+        let mut dense_work = BTreeMap::new();
+        if dense_batch {
+            for (name, width) in [("input", 4608), ("output", 201024)] {
+                cancel()?;
+                dense_work.insert(
+                    name,
+                    DevBuf::new(gpu, max_chunk * width * 4).map_err(|e| e.0)?,
+                );
+            }
+        }
         Ok(Self {
             gpu: gpu.clone(),
             store,
@@ -263,8 +327,14 @@ impl TextGraph {
             max_chunk,
             batch_work,
             batch_experts,
+            dense_batch,
+            dense_work,
+            dense_stats: Default::default(),
             batch_stats: Default::default(),
         })
+    }
+    pub fn dense_stats(&self) -> DenseStats {
+        self.dense_stats
     }
     pub fn batch_stats(&self) -> crate::expert_batch::BatchStats {
         self.batch_stats
@@ -421,6 +491,14 @@ impl TextGraph {
                 r?;
             }
             while let Some(op) = self.cursor.current()?.cloned() {
+                if self.dense_batch
+                    && tokens.len() > 1
+                    && matches!(op, Operation::FinalResidualMixAndNorm)
+                {
+                    self.dense_final(tokens.len(), &counts, &mut rows, &mut cancel)?;
+                    self.cursor.complete_operation()?;
+                    continue;
+                }
                 if self.batch_experts && tokens.len() > 1 {
                     if let Operation::Layer(v) = op {
                         self.expert_layer(
@@ -568,6 +646,416 @@ impl TextGraph {
                 self.primitive
                     .softcap(self.b("logits"), 200058, self.b("logits"))?;
             }
+        }
+        Ok(())
+    }
+    fn dense_prepare(
+        &mut self,
+        v: Visit,
+        count: &mut usize,
+        cancel: &mut impl FnMut() -> Result<()>,
+    ) -> Result<()> {
+        cancel()?;
+        let l = v.physical_layer;
+        let local = v.attention == Attention::Sliding;
+        let name = |suffix: &str| format!("blk.{l}.{suffix}.weight");
+        self.copy("input", 0, "hidden", 0, H)?;
+        if v.previous_pass_messages {
+            self.messages(l)?;
+        }
+        if l == 0 {
+            self.copy("attnmix", 0, "hidden", 0, H)?;
+        } else {
+            self.pack_depth(*count, self.b("hidden"))?;
+            self.ops.mix(
+                self.b("states"),
+                self.weights.tensor(&name("attn_res_query"))?,
+                *count + 1,
+                if local { 1 } else { 3 },
+                self.b("attnmix"),
+            )?;
+        }
+        for j in 0..3 {
+            let raw = self.view("attnmix", if local { 0 } else { j * H }, H)?;
+            let norm = self.view("norms", j * H, H)?;
+            let input = if v.previous_pass_messages {
+                let message = self.view("messages", j * H, H)?;
+                self.control(
+                    l,
+                    ["attn", "k", "v"][j],
+                    &raw,
+                    &message,
+                    self.b("controlled"),
+                )?;
+                self.b("controlled")
+            } else {
+                &raw
+            };
+            let norm_name = if local {
+                "attn_norm"
+            } else {
+                ["attn_q_inp_norm", "attn_k_inp_norm", "attn_v_inp_norm"][j]
+            };
+            self.primitive.rms(
+                input,
+                Some(self.weights.tensor(&name(norm_name))?),
+                1,
+                H,
+                &norm,
+            )?;
+        }
+        Ok(())
+    }
+    fn dense_attention(
+        &mut self,
+        v: Visit,
+        pos: usize,
+        cancel: &mut impl FnMut() -> Result<()>,
+    ) -> Result<()> {
+        cancel()?;
+        let l = v.physical_layer;
+        let local = v.attention == Attention::Sliding;
+        let name = |suffix: &str| format!("blk.{l}.{suffix}.weight");
+        let qin = self.view("norms", 0, H)?;
+        if !local {
+            self.linear(
+                &name("attn_k_conv_proj"),
+                &self.view("norms", H, H)?,
+                self.b("dynk"),
+            )?;
+            self.linear(
+                &name("attn_v_conv_proj"),
+                &self.view("norms", 2 * H, H)?,
+                self.b("dynv"),
+            )?;
+        }
+        self.linear(&name("attn_sink_proj"), &qin, self.b("sink"))?;
+        let slot = self.weights.state.layout.slots[v.ordinal].clone();
+        let history = |offset: usize, n: usize| {
+            self.weights
+                .state
+                .history
+                .view((slot.history_offset + offset * 3) * 4, n * 3 * 4)
+                .map_err(|e| e.0)
+        };
+        self.ops.conv(
+            self.b("kraw"),
+            self.weights.tensor(&name("attn_k_conv"))?,
+            if local { None } else { Some(self.b("dynk")) },
+            8,
+            1024,
+            &history(0, 1024)?,
+            self.b("kc"),
+        )?;
+        self.ops.conv(
+            self.b("vraw"),
+            self.weights.tensor(&name("attn_v_conv"))?,
+            if local { None } else { Some(self.b("dynv")) },
+            8,
+            1024,
+            &history(1024, 1024)?,
+            self.b("vc"),
+        )?;
+        self.primitive.clip(
+            self.b("qraw"),
+            Some(self.weights.tensor(&name("attn_q_clip"))?),
+            24,
+            128,
+            22.627416997969522f32,
+            self.b("q"),
+        )?;
+        self.primitive.clip(
+            self.b("kc"),
+            None,
+            8,
+            128,
+            22.627416997969522f32,
+            self.b("k"),
+        )?;
+        self.primitive
+            .rms(self.b("vc"), None, 8, 128, self.b("v"))?;
+        self.primitive.clip(
+            self.b("rraw"),
+            Some(self.weights.tensor(&name("attn_rel_clip"))?),
+            24,
+            16,
+            8.0,
+            self.b("r"),
+        )?;
+        if !local {
+            // Explicit F32 source formula; transcendental order still needs full-graph gate.
+            let ratio = ((pos + 1) as f32 / 8192.0f32).max(1.0);
+            let tau = 1.0f32 + 0.1f32 * ratio.ln();
+            self.ops.scale(self.b("q"), 3072, tau, self.b("q"))?;
+            self.ops.scale(self.b("r"), 384, tau, self.b("r"))?;
+        }
+        let keys = self
+            .weights
+            .state
+            .kv
+            .view(slot.key_offset * 4, slot.capacity * 1024 * 4)
+            .map_err(|e| e.0)?;
+        let vals = self
+            .weights
+            .state
+            .kv
+            .view(slot.value_offset * 4, slot.capacity * 1024 * 4)
+            .map_err(|e| e.0)?;
+        let row = slot.write_row(pos, self.plan.context())?;
+        keys.copy_within(row * 4096, self.b("k"), 0, 4096)
+            .map_err(|e| e.0)?;
+        vals.copy_within(row * 4096, self.b("v"), 0, 4096)
+            .map_err(|e| e.0)?;
+        self.ops.attention(
+            self.b("q"),
+            &keys,
+            &vals,
+            self.b("r"),
+            self.weights.tensor(&name("attn_rel_bias"))?,
+            self.b("sink"),
+            pos,
+            slot.capacity,
+            local,
+            self.b("attn"),
+            self.b("scores"),
+        )?;
+        self.primitive
+            .gate(self.b("attn"), self.b("gate"), 3072, self.b("gated"))?;
+        Ok(())
+    }
+    fn dense_ff_prefix(
+        &mut self,
+        v: Visit,
+        count: &mut usize,
+        cancel: &mut impl FnMut() -> Result<()>,
+    ) -> Result<[i32; 8]> {
+        cancel()?;
+        let l = v.physical_layer;
+        let name = |suffix: &str| format!("blk.{l}.{suffix}.weight");
+        let slot = self.weights.state.layout.slots[v.ordinal].clone();
+        let history = |offset: usize, n: usize| {
+            self.weights
+                .state
+                .history
+                .view((slot.history_offset + offset * 3) * 4, n * 3 * 4)
+                .map_err(|e| e.0)
+        };
+        self.ops.conv(
+            self.b("projected"),
+            self.weights.tensor(&name("attn_post_conv"))?,
+            None,
+            1,
+            H,
+            &history(2048, H)?,
+            self.b("attnconv"),
+        )?;
+        if v.append_input_residual_block {
+            if *count >= 4 {
+                return Err("residual block overflow".into());
+            }
+            self.copy("blocks", *count * H, "input", 0, H)?;
+            *count += 1;
+            self.copy("ffinput", 0, "attnconv", 0, H)?;
+        } else {
+            self.ops
+                .add(self.b("input"), self.b("attnconv"), H, self.b("ffinput"))?;
+        }
+        self.pack_depth(*count, self.b("ffinput"))?;
+        self.ops.mix(
+            self.b("states"),
+            self.weights.tensor(&name("ffn_res_query"))?,
+            *count + 1,
+            1,
+            self.b("mixed"),
+        )?;
+        let input = if v.previous_pass_messages {
+            let message = self.view("messages", 3 * H, H)?;
+            self.control(l, "mlp", self.b("mixed"), &message, self.b("controlled"))?;
+            self.b("controlled")
+        } else {
+            self.b("mixed")
+        };
+        self.primitive.rms(
+            input,
+            Some(self.weights.tensor(&name("ffn_norm"))?),
+            1,
+            H,
+            self.b("ffnorm"),
+        )?;
+        self.linear(&name("ffn_gate_inp"), self.b("ffnorm"), self.b("router"))?;
+        self.ops.router(
+            self.b("router"),
+            self.weights.tensor(&format!("blk.{l}.exp_probs_b.bias"))?,
+            self.b("ids"),
+            self.b("routing"),
+        )?;
+        let mut raw = [0u8; 32];
+        self.b("ids").read(0, &mut raw).map_err(|e| e.0)?;
+        Ok(std::array::from_fn(|i| {
+            i32::from_le_bytes(raw[i * 4..i * 4 + 4].try_into().unwrap())
+        }))
+    }
+    fn dense_project(
+        &mut self,
+        name: &str,
+        input: &str,
+        input_offset: usize,
+        output: &str,
+        family: usize,
+        n: usize,
+        rows: &[BTreeMap<&'static str, DevBuf>],
+        cancel: &mut impl FnMut() -> Result<()>,
+    ) -> Result<()> {
+        cancel()?;
+        let tensor = self
+            .store
+            .file()
+            .tensor(name)
+            .ok_or("dense descriptor missing")?;
+        const SHAPES: [(usize, usize); 7] = [
+            (3072, 2304),
+            (1024, 2304),
+            (1024, 2304),
+            (384, 2304),
+            (3072, 2304),
+            (2304, 3072),
+            (201024, 2304),
+        ];
+        let &(out_width, in_width) = SHAPES.get(family).ok_or("unknown dense family")?;
+        if tensor.ty != GType::Q8_0
+            || tensor.shape.as_slice() != [out_width as u64, in_width as u64]
+        {
+            return Err("dense projection type/shape differs from validated family".into());
+        }
+        for (i, row) in rows.iter().take(n).enumerate() {
+            cancel()?;
+            self.dense_work["input"]
+                .copy_within(
+                    i * in_width * 4,
+                    &row[input],
+                    input_offset * 4,
+                    in_width * 4,
+                )
+                .map_err(|e| e.0)?;
+        }
+        self.quant.matvec_batch(
+            self.weights.tensor(name)?,
+            tensor.ty,
+            out_width,
+            in_width,
+            &self.dense_work["input"],
+            None,
+            &self.dense_work["output"],
+            n,
+        )?;
+        for (i, row) in rows.iter().take(n).enumerate() {
+            cancel()?;
+            row[output]
+                .copy_within(
+                    0,
+                    &self.dense_work["output"],
+                    i * out_width * 4,
+                    out_width * 4,
+                )
+                .map_err(|e| e.0)?;
+        }
+        self.dense_stats.family_calls[family] += 1;
+        self.dense_stats.logical_vectors[family] += n as u64;
+        Ok(())
+    }
+    fn dense_prefixes(
+        &mut self,
+        v: Visit,
+        pos: usize,
+        n: usize,
+        counts: &mut [usize; 4],
+        rows: &mut [BTreeMap<&'static str, DevBuf>],
+        cancel: &mut impl FnMut() -> Result<()>,
+    ) -> Result<Vec<[i32; 8]>> {
+        for i in 0..n {
+            std::mem::swap(&mut self.work, &mut rows[i]);
+            let r = self.dense_prepare(v, &mut counts[i], cancel);
+            std::mem::swap(&mut self.work, &mut rows[i]);
+            r?;
+        }
+        for (suffix, offset, out, family) in [
+            ("attn_q", 0, "qraw", 0),
+            ("attn_k", H, "kraw", 1),
+            ("attn_v", 2 * H, "vraw", 2),
+            ("attn_rel", 0, "rraw", 3),
+            ("attn_gate", 0, "gate", 4),
+        ] {
+            self.dense_project(
+                &format!("blk.{}.{suffix}.weight", v.physical_layer),
+                "norms",
+                offset,
+                out,
+                family,
+                n,
+                rows,
+                cancel,
+            )?;
+        }
+        for i in 0..n {
+            std::mem::swap(&mut self.work, &mut rows[i]);
+            let r = self.dense_attention(v, pos + i, cancel);
+            std::mem::swap(&mut self.work, &mut rows[i]);
+            r?;
+        }
+        self.dense_project(
+            &format!("blk.{}.attn_output.weight", v.physical_layer),
+            "gated",
+            0,
+            "projected",
+            5,
+            n,
+            rows,
+            cancel,
+        )?;
+        let mut ids = Vec::with_capacity(n);
+        for i in 0..n {
+            std::mem::swap(&mut self.work, &mut rows[i]);
+            let r = self.dense_ff_prefix(v, &mut counts[i], cancel);
+            std::mem::swap(&mut self.work, &mut rows[i]);
+            ids.push(r?);
+        }
+        Ok(ids)
+    }
+    fn dense_final(
+        &mut self,
+        n: usize,
+        counts: &[usize; 4],
+        rows: &mut [BTreeMap<&'static str, DevBuf>],
+        cancel: &mut impl FnMut() -> Result<()>,
+    ) -> Result<()> {
+        for i in 0..n {
+            cancel()?;
+            std::mem::swap(&mut self.work, &mut rows[i]);
+            let r = (|| {
+                self.pack_depth(counts[i], self.b("hidden"))?;
+                self.ops.mix(
+                    self.b("states"),
+                    self.weights.tensor("output_res_query.weight")?,
+                    counts[i] + 1,
+                    1,
+                    self.b("mixed"),
+                )?;
+                self.primitive.rms(
+                    self.b("mixed"),
+                    Some(self.weights.tensor("output_norm.weight")?),
+                    1,
+                    H,
+                    self.b("hidden"),
+                )
+            })();
+            std::mem::swap(&mut self.work, &mut rows[i]);
+            r?;
+        }
+        self.dense_project("output.weight", "hidden", 0, "logits", 6, n, rows, cancel)?;
+        for row in rows.iter().take(n) {
+            cancel()?;
+            self.primitive
+                .softcap(&row["logits"], 200058, &row["logits"])?;
         }
         Ok(())
     }
@@ -836,13 +1324,18 @@ impl TextGraph {
         cancel: &mut impl FnMut() -> Result<()>,
         observe: &mut impl FnMut(usize, &Visit, &DevBuf) -> Result<()>,
     ) -> Result<()> {
-        let mut ids = Vec::with_capacity(n);
-        for i in 0..n {
-            std::mem::swap(&mut self.work, &mut rows[i]);
-            let r = self.expert_prefix(v, pos + i, &mut counts[i], cancel);
-            std::mem::swap(&mut self.work, &mut rows[i]);
-            ids.push(r?);
-        }
+        let ids = if self.dense_batch {
+            self.dense_prefixes(v, pos, n, counts, rows, cancel)?
+        } else {
+            let mut ids = Vec::with_capacity(n);
+            for i in 0..n {
+                std::mem::swap(&mut self.work, &mut rows[i]);
+                let r = self.expert_prefix(v, pos + i, &mut counts[i], cancel);
+                std::mem::swap(&mut self.work, &mut rows[i]);
+                ids.push(r?);
+            }
+            ids
+        };
         let groups = crate::expert_batch::groups(&ids)?;
         self.batch_stats.visits += 1;
         self.batch_stats.logical_selections += (n * 8) as u64;
@@ -1229,3 +1722,17 @@ impl TextGraph {
 
 #[path = "graph_state.rs"]
 mod graph_state;
+
+#[cfg(test)]
+mod dense_tests {
+    use super::*;
+    #[test]
+    fn padded_head_scratch_is_bounded_and_exact() {
+        assert_eq!(dense_scratch_bytes(2).unwrap(), 1645056);
+        assert_eq!(dense_scratch_bytes(4).unwrap(), 3290112);
+        assert!(dense_scratch_bytes(0).is_err());
+        assert!(dense_scratch_bytes(5).is_err());
+        assert!(dense_scratch_bytes(usize::MAX).is_err());
+        assert_eq!((201024 - 200058) * 4 * 4, 15456);
+    }
+}
