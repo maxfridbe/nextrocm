@@ -1,0 +1,476 @@
+{
+  "schema": 1,
+  "commit": "cbc7e320c423f9e20dc3c3b1bd3ea291008c8d25",
+  "execution": "NOT_RUN",
+  "hardware": {
+    "arch": "gfx803",
+    "wave_size": 64,
+    "vram_bytes": 4294967296,
+    "source": "parent rocminfo receipt; not measured by this tool"
+  },
+  "files": [
+    {
+      "path": "cli/nextrocm/examples/qwen36_batch_check.rs",
+      "sha256": "57c34f03a05ead742545bdd17040f56c86928f0fe16336748b79cd8a1d233471",
+      "usage_lines": []
+    },
+    {
+      "path": "cli/nextrocm/examples/qwen36_batch_numeric.rs",
+      "sha256": "2a5eb4a47867b5d679226b6c13f3a4be7c6dc398aa7b56e1d8284c6880c7b0d4",
+      "usage_lines": [
+        "//! Usage: qwen36_batch_numeric MODEL REFERENCE_DIR CHUNK [EXPERT_MIB=0]"
+      ]
+    },
+    {
+      "path": "cli/nextrocm/examples/qwen36_bench.rs",
+      "sha256": "0d3a10d2936a28c13a0df0a71ba75359c7186fe609e48aa90d014bfe2a2f8f4f",
+      "usage_lines": [
+        "let model=it.next().ok_or(\"usage: qwen36_bench MODEL [--pp N] [--tg N] [--ctx N] [--warm-runs N] [--gpu N] [--tokens FILE.json | --prompt TEXT] [--expert-mib N] [--mirror-mib 0..2048] [--save-profile PATH] [--profile]\")?;"
+      ]
+    },
+    {
+      "path": "cli/nextrocm/examples/qwen36_lifecycle.rs",
+      "sha256": "20feca6c6e040037b4201692d1c9412e70583e28584db1a27b79cba1fa3c191b",
+      "usage_lines": []
+    },
+    {
+      "path": "cli/nextrocm/examples/qwen36_numeric.rs",
+      "sha256": "4616d5cfde68eb3fbf916eb5f3b2e75fa2b434a80980aa6214cc5251bcdde547",
+      "usage_lines": [
+        "//! Usage: numeric_reference MODEL REFERENCE_DIR [ABS_TOL=0.05] [REL_TOL=0.01]"
+      ]
+    },
+    {
+      "path": "cli/nextrocm/examples/qwen36_scalar_check.rs",
+      "sha256": "ff0ff5c692c306c51282cf1112b02c5c9930309325dcf291cd7d1aa7b8d71a36",
+      "usage_lines": []
+    },
+    {
+      "path": "cli/nextrocm/examples/qwen36_tokenizer.rs",
+      "sha256": "986c122ac319b481445affc4db284aac2c5ba1d5248c834f36abae1ce36e8ec2",
+      "usage_lines": []
+    },
+    {
+      "path": "cli/nextrocm/examples/qwen36_transfer.rs",
+      "sha256": "ecb5392e050ac39b78c0c733440ba5bfdb30a8dad90cef7a71f50d9ec156701d",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/inkling2/mix.hip",
+      "sha256": "a461b3b6e1d9def4fba0e071369d392e0fb5a021eb74c24c60e259a5fb9ed5e3",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/inkling2/primitives.hip",
+      "sha256": "745c868daf679a5ea572dda282dda7c2e6969a0ec6736722091a4f71f87e1394",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/inkling2/quant.hip",
+      "sha256": "2a64ce094930ee8e2a3943b159bbb4c0a93e75331e7a7eee192167def56cd81a",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/inkling2/quant_profile.hip",
+      "sha256": "7b84dbe8206de144071145fbcda4c32409308174367ecf149c8a467470d68b62",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/inkling2/quant_wave32.hip",
+      "sha256": "bd613144e7d8e74a724e085517af2c3509a39b04e53aebf2eff5817bfa90124e",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/inkling2/quant_wave32_dispatch.hip",
+      "sha256": "4e3b5938dc68b568e9d90f918b228bef87a3873984d1d1daaa56314765ec7bd1",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/inkling2/quant_wave32_profile.hip",
+      "sha256": "89a06e81a239adcab42613d150f81660b1c700dedd79c46deba98dbdfd0a67ef",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/inkling2/state.hip",
+      "sha256": "b28425f5db7900c35b9909cf0229ab8876a034a5c53a27914f28d496cea07f0b",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/inkling2/state_guards.cpp",
+      "sha256": "6607713e5c01f4ad953d24bbf61912fa16395238ebeb1f6350149b927f7af11d",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/qwen35/batch.hip",
+      "sha256": "efebd558ad8ea004e1b3a66b1b18588a15f4b41c505b06140647f02294b3286f",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/qwen35/quants_test.cpp",
+      "sha256": "912a8cc6aed61f8604d214d3b2fc6cfeb71201865c5672db95a82e9253c4aaf8",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/qwen35/qwen35.hip",
+      "sha256": "a082ad197bdd89435fc8289ddfb4790dc8d4c2d2d8db8ed050a6c3c924d7bae6",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/qwen35/scalar_fast.hip",
+      "sha256": "212909a0688800b111e851003d19d40d3446c76f6c32d649eac14ebf94e4dce1",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/qwen3moe/qwen3moe.hip",
+      "sha256": "a08ebbfa0323980b1a876308aa12afa1e009f0959db8ce76ec5df0a69ba82d96",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/stablelm/quants_test.cpp",
+      "sha256": "8a70693e4b956880e80ef23f7a7c21388d5c6b37c7d97bb33fbeced9f3e31332",
+      "usage_lines": []
+    },
+    {
+      "path": "kernels/llm/stablelm/stablelm.hip",
+      "sha256": "1b6bf443cf481cbdde3662f8791b19626f6775af660da793cd59f201475d3851",
+      "usage_lines": []
+    },
+    {
+      "path": "llm/inkling2/examples/inspect_adapter.rs",
+      "sha256": "c468ce698822fa55e4dbc3a848249a840824925a85b787a7cf3d1e6a933667e3",
+      "usage_lines": [
+        "return Err(\"usage: inspect_adapter GGUF GPU NEW_OUT; NEXTROCM_LIB required\".into());"
+      ]
+    },
+    {
+      "path": "llm/inkling2/examples/inspect_embedding.rs",
+      "sha256": "aacaad53c176da1735be9a2025af7acb6d6c2d003f4fa5f9b148cc3559c7b708",
+      "usage_lines": [
+        "return Err(\"usage: inspect_embedding GGUF OFFICIAL_CONFIG TOKEN_ID GPU_INDEX NEW_OUTPUT; NEXTROCM_LIB required\".into());"
+      ]
+    },
+    {
+      "path": "llm/inkling2/examples/inspect_layer0.rs",
+      "sha256": "61c2d99c991e4a6f25ddc6a4d3e6fe97a3bea7ab7ef8b20486115acec83d5b00",
+      "usage_lines": [
+        "\"usage: inspect_layer0 GGUF CONFIG COMMA_TOKEN_IDS GPU NEW_OUT; NEXTROCM_LIB required\""
+      ]
+    },
+    {
+      "path": "llm/inkling2/examples/inspect_model.rs",
+      "sha256": "ee2e4a70e65cd361791a0e0930d82b25faa3024f9049a520dd3964d5f63f21c3",
+      "usage_lines": [
+        "return Err(\"usage: inspect_model GGUF OFFICIAL_CONFIG CONTEXT PREFILL_ROWS DEVICE_FREE_BYTES NEW_REPORT\".into());"
+      ]
+    },
+    {
+      "path": "llm/inkling2/examples/inspect_quant_profile.rs",
+      "sha256": "5b7f433012780badd5116ff69da4826655e29ee3f6a759ec7a2e1101fc9f1abe",
+      "usage_lines": [
+        "return Err(\"usage: inspect_quant_profile GGUF CONFIG GPU NEW_OUT token 0 0 BASELINE EXPECTED_REPORT_SHA256; NEXTROCM_LIB required\".into());"
+      ]
+    },
+    {
+      "path": "llm/inkling2/examples/inspect_reply.rs",
+      "sha256": "dc5df7d11ea86e86999236fc7107aab0e7fe25a2f9b77fa45ffaebe17dc6c9b1",
+      "usage_lines": [
+        "return Err(\"usage: inspect_reply GGUF CONFIG GPU NEW_OUT token|prompt INPUT MAX_NEW_TOKENS; NEXTROCM_LIB required\".into());"
+      ]
+    },
+    {
+      "path": "llm/inkling2/examples/inspect_residency.rs",
+      "sha256": "1e930b62294d84291c67652b12406b3b211c16c897ed4cad88042515f5196e23",
+      "usage_lines": [
+        "return Err(\"usage: inspect_residency GGUF CONFIG CONTEXT GPU NEW_OUTPUT\".into());"
+      ]
+    },
+    {
+      "path": "llm/inkling2/examples/inspect_sequence.rs",
+      "sha256": "10ef9318bf957bd16f06bcbfffba02e5dc20b1b9394c310d4177f64b691bbd23",
+      "usage_lines": [
+        "return Err(\"usage: inspect_sequence GGUF CONFIG GPU NEW_OUT tokens COMMA_IDS 0; NEXTROCM_LIB required\".into());"
+      ]
+    },
+    {
+      "path": "llm/inkling2/examples/inspect_service_hooks.rs",
+      "sha256": "7f61a86509f65dc5171b486d7f3cb7c6aaeca87bccad4f1626c8470262e1c8df",
+      "usage_lines": [
+        "return Err(\"usage: inspect_service_hooks GGUF GPU NEW_OUT; NEXTROCM_LIB required\".into());"
+      ]
+    },
+    {
+      "path": "llm/inkling2/examples/inspect_text.rs",
+      "sha256": "56341df87539b8c483eb6cdf8af278a8f0a716a94816423b1a7481bf2615bf5f",
+      "usage_lines": [
+        "return Err(\"usage: inspect_text GGUF CONFIG GPU NEW_OUT token|prompt INPUT MAX_NEW_TOKENS; NEXTROCM_LIB required\".into());"
+      ]
+    },
+    {
+      "path": "llm/inkling2/examples/inspect_wave_quant_profile.rs",
+      "sha256": "34a11588be812ae9e7d709a71c114e91882a32a8e15d488ba5e809006b9f09a4",
+      "usage_lines": [
+        "return Err(\"usage: inspect_wave_quant_profile GGUF CONFIG GPU NEW_OUT token 0 0 BASELINE EXPECTED_REPORT_SHA256; NEXTROCM_LIB required\".into());"
+      ]
+    },
+    {
+      "path": "llm/inkling2/examples/utilization_bench.rs",
+      "sha256": "2068a5b1aaa2a774f9e45013b3cdde8efc3a27cbdc510eed09ad4e1cc7d531b6",
+      "usage_lines": [
+        "return Err(\"usage: utilization_bench GGUF GPU NEW_OUT FROZEN_REPLY_REPORT TG16|32; NEXTROCM_LIB=full994f runtime\".into());"
+      ]
+    },
+    {
+      "path": "llm/qwen3moe/examples/lifecycle.rs",
+      "sha256": "e5605e30a612746a7359118dd358c36d06730785486b27873b38cce1e9586350",
+      "usage_lines": []
+    },
+    {
+      "path": "llm/qwen3moe/examples/numeric_reference.rs",
+      "sha256": "a3cba8e1216c846eed9faaa0d71b2da8cea3d25169672703cd6867030d807d63",
+      "usage_lines": [
+        "//! Usage: numeric_reference MODEL REFERENCE_DIR [ABS_TOL=0.05] [REL_TOL=0.01]"
+      ]
+    },
+    {
+      "path": "llm/qwen3moe/examples/tokenizer_parity.rs",
+      "sha256": "e404e2e5481cad90ce92875e06a20dc4f9904a8984647fd92a1ec96e5f762a84",
+      "usage_lines": []
+    },
+    {
+      "path": "llm/stablelm/examples/lifecycle.rs",
+      "sha256": "db8c3c5da675089a8ab4ebac9b24e13f6f3b5aae176a54d896c140cbaf9f2f24",
+      "usage_lines": []
+    },
+    {
+      "path": "llm/stablelm/examples/numeric_reference.rs",
+      "sha256": "b98e558a9270f8443e9cf2badd7d9b3e8273ca04d8079266bcabe28885647055",
+      "usage_lines": [
+        "//! Usage: numeric_reference MODEL REFERENCE_DIR [ABS_TOL=0.05] [REL_TOL=0.01]"
+      ]
+    },
+    {
+      "path": "llm/stablelm/examples/tokenizer_parity.rs",
+      "sha256": "15fe9ffeb07377c1ea6b1c120ba861eb83d7b28ee45b2648c721073e0cb0642b",
+      "usage_lines": []
+    }
+  ],
+  "assets": [
+    {
+      "card": "model-cards/llm/inkling2-mini-ud-q4km.yml",
+      "card_sha256": "b85a24eea2d8c8cf2fa8635aee1336c5a07e6823c558786b802b5fee9832b3cc",
+      "specification": {
+        "id": "inkling2-mini-ud-q4km",
+        "kind": "llm",
+        "arch": "inkling2",
+        "title": "Inkling 2 Mini UD-Q4_K_M (text only)",
+        "license": "apache-2.0",
+        "commercial": true,
+        "license_note": "Apache 2.0; pinned quantized model: https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/blob/ae9327c5fbc7333116ba32eee78bb5d2bbefae4f/README.md",
+        "gpus": "0",
+        "ctx": "4096",
+        "vram_gib": 5.0,
+        "tools": false,
+        "guide": "guides/inkling2.md",
+        "env": {
+          "NS_PARALLEL": "1"
+        },
+        "defaults": {},
+        "files": {
+          "model": {
+            "key": "inkling2-mini-ud-q4km-weights",
+            "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/ae9327c5fbc7333116ba32eee78bb5d2bbefae4f/Inkling-2-Mini-UD-Q4_K_M.gguf",
+            "size": 16610543328,
+            "sha256": "f90c5a4df44d335ac9f9eea2a15c31d6c5a377b1b3cd9ff7fc2cf123f3cdf7e1",
+            "path": "inkling-2-mini/Inkling-2-Mini-UD-Q4_K_M.gguf"
+          }
+        }
+      }
+    },
+    {
+      "card": "model-cards/llm/qwen3-coder-30b-a3b-q4.yml",
+      "card_sha256": "ee81ee6110e92fdfeb4cc9a58f30fceadb3a528a96c801e832f91b75e6add001",
+      "specification": {
+        "id": "qwen3-coder-30b-a3b-q4",
+        "kind": "llm",
+        "arch": "qwen3moe",
+        "title": "Qwen3-Coder 30B A3B Q4_K_M",
+        "license": "apache-2.0",
+        "commercial": true,
+        "license_note": "Apache 2.0; source: https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct/resolve/b2cff646eb4bb1d68355c01b18ae02e7cf42d120/LICENSE",
+        "gpus": "0",
+        "ctx": "4096",
+        "vram_gib": 2.5,
+        "tools": true,
+        "env": {
+          "NS_PROMPT_CACHE_MIB": "256"
+        },
+        "defaults": {},
+        "guide": "guides/qwen3moe.md",
+        "files": {
+          "model": {
+            "key": "qwen3-coder-30b-a3b-q4-weights",
+            "url": "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/b17cb02dd882d5b6ab62fc777ad2995f19668350/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+            "size": 18556689568,
+            "sha256": "fadc3e5f8d42bf7e894a785b05082e47daee4df26680389817e2093056f088ad",
+            "path": "qwen3moe/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
+          }
+        }
+      }
+    },
+    {
+      "card": "model-cards/llm/qwen3.5-4b-q4km.yml",
+      "card_sha256": "8dfb8e41fe470d2ff6843d6c12ba98f8e29e887dfe76fc1f967617efe0e7c468",
+      "specification": {
+        "id": "qwen3.5-4b-q4km",
+        "kind": "llm",
+        "arch": "qwen35",
+        "title": "Qwen3.5 4B Q4_K_M",
+        "license": "apache-2.0",
+        "commercial": true,
+        "gpus": "0",
+        "ctx": "4096",
+        "vram_gib": 4.0,
+        "tools": true,
+        "env": {
+          "NS_PROMPT_CACHE_MIB": "256"
+        },
+        "defaults": {},
+        "guide": "guides/qwen35.md",
+        "files": {
+          "model": {
+            "key": "qwen3.5-4b-q4km-weights",
+            "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf",
+            "size": 2740937888,
+            "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+            "path": "qwen35/Qwen3.5-4B-Q4_K_M.gguf"
+          }
+        }
+      }
+    },
+    {
+      "card": "model-cards/llm/qwen3.6-35b-a3b-heretic-q4.yml",
+      "card_sha256": "b3ac51a55a2a8d44ae98a7344d3c2243d6fd2eaefe731155e180f65b01c60a4c",
+      "specification": {
+        "id": "qwen3.6-35b-a3b-heretic-q4",
+        "kind": "llm",
+        "arch": "qwen35moe",
+        "title": "Qwen3.6 35B A3B Heretic Q4_K_M",
+        "license": "apache-2.0",
+        "commercial": true,
+        "license_note": "Apache 2.0; source: https://huggingface.co/Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF/tree/4c22107061e656fb2a87a3ec2491bb61975eb581",
+        "gpus": "0",
+        "ctx": "4096",
+        "vram_gib": 3.0,
+        "tools": true,
+        "env": {
+          "NS_PROMPT_CACHE_MIB": "256",
+          "NS_Q35_PAGE_CACHE": "1",
+          "NS_Q35_PINNED_STAGE": "1",
+          "NS_Q35_CHUNK": "64",
+          "NS_Q35_SCALAR": "3",
+          "NS_Q35_PREFETCH_MIB": "32",
+          "NS_Q35_HOST_MIB": "2048",
+          "NS_Q35_EXPERT_PROFILE": "/home/developer/.config/nextrocm/profiles/qwen36-experts.json"
+        },
+        "defaults": {},
+        "guide": "guides/qwen36.md",
+        "files": {
+          "model": {
+            "key": "qwen3.6-35b-a3b-heretic-q4-weights",
+            "url": "https://huggingface.co/Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF/resolve/4c22107061e656fb2a87a3ec2491bb61975eb581/Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M/Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M.gguf",
+            "size": 21166758336,
+            "sha256": "ae2fb73ac0da875640269f1e65e9c7fb415b066c6d544c3eef9adb0d03f04792",
+            "path": "qwen36/Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M.gguf"
+          }
+        }
+      }
+    },
+    {
+      "card": "model-cards/llm/stable-code-3b-q4.yml",
+      "card_sha256": "b902ccd614cc3650997fe58b8548118e1b1a9a86361f706c6ec24d8c72b0be7d",
+      "specification": {
+        "id": "stable-code-3b-q4",
+        "kind": "llm",
+        "arch": "stablelm",
+        "title": "Stable Code 3B Q4_K_M (code completion)",
+        "license": "stabilityai-community",
+        "license_note": "Conditional commercial use under the pinned Stability AI Community License: registration required; annual revenue above USD 1 million requires a separate license. See https://huggingface.co/stabilityai/stable-code-3b/blob/5cee3fa2905e7a03c4a1b0bc02f39da7ceaa6cb5/LICENSE.md",
+        "gpus": "0",
+        "ctx": "4096",
+        "vram_gib": 3.5,
+        "tools": false,
+        "env": {},
+        "defaults": {},
+        "files": {
+          "model": {
+            "key": "stable-code-3b-q4-weights",
+            "url": "https://huggingface.co/TheBloke/stable-code-3b-GGUF/resolve/53430e2b42177f12f2fe8c844cd47211756ca072/stable-code-3b.Q4_K_M.gguf",
+            "size": 1708595200,
+            "sha256": "ee19af8605fcb7a73c5d68f43f734df4cc30409962347158299e939cb51e233c",
+            "path": "stablelm/stable-code-3b.Q4_K_M.gguf"
+          }
+        },
+        "commercial": true,
+        "guide": "guides/stablelm.md"
+      }
+    },
+    {
+      "card": "model-cards/llm/stable-code-instruct-3b-q4.yml",
+      "card_sha256": "ec697e0300b2738137005d55d3e5e2827a1d58a9ea505d3bbe049ecdb71981cc",
+      "specification": {
+        "id": "stable-code-instruct-3b-q4",
+        "kind": "llm",
+        "arch": "stablelm",
+        "title": "Stable Code Instruct 3B Q4_K_M",
+        "license": "stabilityai-community",
+        "license_note": "Conditional commercial use under the pinned Stability AI Community License: registration required; annual revenue above USD 1 million requires a separate license. See https://huggingface.co/stabilityai/stable-code-instruct-3b/blob/20e21f0e817b72499c8585d86a139c0fd011adba/LICENSE.md",
+        "gpus": "0",
+        "ctx": "4096",
+        "vram_gib": 3.5,
+        "tools": false,
+        "env": {},
+        "defaults": {},
+        "files": {
+          "model": {
+            "key": "stable-code-instruct-3b-q4-weights",
+            "url": "https://huggingface.co/stabilityai/stable-code-instruct-3b/resolve/20e21f0e817b72499c8585d86a139c0fd011adba/stable-code-3b-q4_k_m.gguf",
+            "size": 1708595936,
+            "sha256": "31b41fd17357e3a10e0dd46334d0b81b0a6374454ac3d8a6fbf24a6980e1dbdd",
+            "path": "stablelm/stable-code-instruct-3b.Q4_K_M.gguf"
+          }
+        },
+        "commercial": true,
+        "guide": "guides/stablelm.md"
+      }
+    },
+    {
+      "card": "model-cards/llm/stablelm-zephyr-3b-q4.yml",
+      "card_sha256": "59d1dfd40792aa524b34e21f4fc4e35bc8a13d8a300f3784ca4ed9688933daca",
+      "specification": {
+        "id": "stablelm-zephyr-3b-q4",
+        "kind": "llm",
+        "arch": "stablelm",
+        "title": "StableLM Zephyr 3B Q4_K_M",
+        "license": "stabilityai-community",
+        "license_note": "Conditional commercial use under the pinned Stability AI Community License: registration required; annual revenue above USD 1 million requires a separate license. See https://huggingface.co/stabilityai/stablelm-zephyr-3b/blob/fe1fd5e36ccb8cb2cb1dc225ab6d2962692b9837/LICENSE.md",
+        "gpus": "0",
+        "ctx": "4096",
+        "vram_gib": 3.5,
+        "tools": false,
+        "env": {},
+        "defaults": {},
+        "files": {
+          "model": {
+            "key": "stablelm-zephyr-3b-q4-weights",
+            "url": "https://huggingface.co/TheBloke/stablelm-zephyr-3b-GGUF/resolve/465310e5eb914190e89f531cc1c348812e27dcea/stablelm-zephyr-3b.Q4_K_M.gguf",
+            "size": 1708595648,
+            "sha256": "74b2613b6e89d904a2ea38d56d233e4d2ca2fe663844b2e7aa90e769d359061b",
+            "path": "stablelm/stablelm-zephyr-3b.Q4_K_M.gguf"
+          }
+        },
+        "commercial": true,
+        "guide": "guides/stablelm.md"
+      }
+    }
+  ]
+}

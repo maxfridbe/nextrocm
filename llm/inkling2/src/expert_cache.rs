@@ -15,6 +15,9 @@ pub enum ExpertMode {
     DeviceLru {
         budget_bytes: u64,
     },
+    SegmentedLru {
+        budget_bytes: u64,
+    },
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 /// Pair payload only: excludes dense weights and the two four-byte scale reads.
@@ -28,7 +31,7 @@ pub struct ExpertStats {
     pub upload_calls: u64,
 }
 impl ExpertMode {
-    /// Slab uses whole largest-pair slots. Metadata has an explicit 128KiB reserve.
+    /// Slab uses whole largest-pair slots. Variable ranges share the original slab; metadata has a 256KiB reserve.
     pub fn extra_bytes(self, pair: u64) -> Result<(u64, u64)> {
         if pair == 0 {
             return Err("zero expert pair".into());
@@ -36,7 +39,7 @@ impl ExpertMode {
         match self {
             Self::Stream => Ok((0, 0)),
             Self::BatchPair => Ok((0, pair)),
-            Self::DeviceLru { budget_bytes } => {
+            Self::SegmentedLru { budget_bytes } | Self::DeviceLru { budget_bytes } => {
                 if budget_bytes > MAX_CACHE_BYTES || budget_bytes < pair {
                     return Err("expert cache budget must hold one pair and be <=1GiB".into());
                 }
@@ -46,81 +49,27 @@ impl ExpertMode {
                 }
                 Ok((
                     slots * pair,
-                    pair.checked_add(131072).ok_or("host cache size overflow")?,
+                    pair.checked_add(if matches!(self, Self::SegmentedLru { .. }) {
+                        262144
+                    } else {
+                        131072
+                    })
+                    .ok_or("host cache size overflow")?,
                 ))
             }
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Key {
-    layer: usize,
-    expert: usize,
-}
-#[derive(Clone, Copy, Debug, Default)]
-struct Entry {
-    key: Option<Key>,
-    touched: u64,
-}
-struct Lru {
-    entries: Vec<Entry>,
-    clock: u64,
-}
-impl Lru {
-    fn new(slots: usize) -> Result<Self> {
-        if slots == 0 || slots > 3072 {
-            return Err("invalid cache slot count".into());
-        }
-        Ok(Self {
-            entries: vec![Entry::default(); slots],
-            clock: 0,
-        })
-    }
-    fn tick(&mut self) -> Result<u64> {
-        self.clock = self.clock.checked_add(1).ok_or("cache age overflow")?;
-        Ok(self.clock)
-    }
-    fn hit(&mut self, key: Key) -> Result<Option<usize>> {
-        if let Some(i) = self.entries.iter().position(|e| e.key == Some(key)) {
-            self.entries[i].touched = self.tick()?;
-            Ok(Some(i))
-        } else {
-            Ok(None)
-        }
-    }
-    /// Invalidate BEFORE reading/uploading. A failed or cancelled miss cannot hit.
-    fn victim(&mut self) -> (usize, bool) {
-        let i = self
-            .entries
-            .iter()
-            .position(|e| e.key.is_none())
-            .unwrap_or_else(|| {
-                self.entries
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, e)| e.touched)
-                    .unwrap()
-                    .0
-            });
-        let evicted = self.entries[i].key.take().is_some();
-        (i, evicted)
-    }
-    fn commit(&mut self, i: usize, key: Key) -> Result<()> {
-        let touched = self.tick()?;
-        self.entries[i] = Entry {
-            key: Some(key),
-            touched,
-        };
-        Ok(())
-    }
-}
-pub(crate) struct PairStaging {
+#[path = "range_lru.rs"]
+mod range_lru;
+use range_lru::{Key, RangeLru};
+pub(crate) struct VariableStaging {
     slab: Option<DevBuf>,
-    lru: Option<Lru>,
+    lru: Option<RangeLru>,
     host: HostBuf,
     pair_bytes: usize,
 }
-impl PairStaging {
+impl VariableStaging {
     pub fn new(gpu: &Arc<Gpu>, mode: ExpertMode, pair_bytes: usize) -> Result<Option<Self>> {
         let (slab_bytes, _) = mode.extra_bytes(pair_bytes as u64)?;
         if mode == ExpertMode::Stream {
@@ -139,7 +88,9 @@ impl PairStaging {
                     )
                     .map_err(|e| e.0)?,
                 ),
-                Some(Lru::new((slab_bytes / pair_bytes as u64) as usize)?),
+                Some(RangeLru::new(
+                    usize::try_from(slab_bytes).map_err(|_| "cache size exceeds usize")?,
+                )?),
             )
         } else {
             (None, None)
@@ -172,21 +123,22 @@ impl PairStaging {
             return Err("expert exceeds reserved pair size".into());
         }
         let hit = match &mut self.lru {
-            Some(lru) => lru.hit(key)?,
+            Some(lru) => lru.hit(key, total)?,
             None => None,
         };
-        let slot = if let Some(i) = hit {
+        let base = if let Some(offset) = hit {
             stats.hits += 1;
-            i
+            offset
         } else {
             stats.misses += 1;
-            let i = if let Some(lru) = &mut self.lru {
-                let (i, evicted) = lru.victim();
-                stats.evictions += u64::from(evicted);
-                i
+            let reservation = if let Some(lru) = &mut self.lru {
+                let (reservation, evicted) = lru.reserve(total)?;
+                stats.evictions += evicted;
+                Some(reservation)
             } else {
-                0
+                None
             };
+            let offset = reservation.as_ref().map_or(0, |r| r.offset);
             for (span, base) in spans.iter().zip([0, first]) {
                 check()?;
                 let bytes = usize::try_from(span.bytes).map_err(|_| "pair size overflow")?;
@@ -202,19 +154,18 @@ impl PairStaging {
             check()?;
             let target = self.slab.as_ref().unwrap_or(fallback);
             target
-                .write(i * self.pair_bytes, &self.host.as_slice()[..total])
+                .write(offset, &self.host.as_slice()[..total])
                 .map_err(|e| e.0)?;
             stats.upload_calls += 1;
             stats.uploaded_bytes += total as u64;
             check()?;
-            if let Some(lru) = &mut self.lru {
-                lru.commit(i, key)?;
+            if let (Some(lru), Some(reservation)) = (&mut self.lru, reservation) {
+                lru.commit(reservation, key)?;
             }
-            i
+            offset
         };
         check()?;
         let target = self.slab.as_ref().unwrap_or(fallback);
-        let base = slot * self.pair_bytes;
         Ok((
             target.view(base, first).map_err(|e| e.0)?,
             target.view(base + first, second).map_err(|e| e.0)?,
@@ -229,52 +180,85 @@ mod tests {
         let pair = 6469632;
         assert_eq!(ExpertMode::Stream.extra_bytes(pair).unwrap(), (0, 0));
         assert_eq!(ExpertMode::BatchPair.extra_bytes(pair).unwrap(), (0, pair));
-        let (slab, host) = ExpertMode::DeviceLru {
+        let (slab, host) = ExpertMode::SegmentedLru {
             budget_bytes: MAX_CACHE_BYTES,
         }
         .extra_bytes(pair)
         .unwrap();
         assert_eq!(slab, pair * 165);
-        assert_eq!(host, pair + 131072);
+        assert_eq!(host, pair + 262144);
+        assert_eq!(
+            ExpertMode::DeviceLru {
+                budget_bytes: MAX_CACHE_BYTES
+            }
+            .extra_bytes(pair)
+            .unwrap(),
+            (pair * 165, pair + 131072)
+        );
+        assert_eq!(ExpertMode::default(), ExpertMode::Stream);
         for budget_bytes in [0, pair - 1, MAX_CACHE_BYTES + 1] {
-            assert!(ExpertMode::DeviceLru { budget_bytes }
+            assert!(ExpertMode::SegmentedLru { budget_bytes }
                 .extra_bytes(pair)
                 .is_err());
         }
     }
-    #[test]
-    fn physical_keys_lru_and_failed_fill() {
-        let mut p = Lru::new(2).unwrap();
-        let a = Key {
-            layer: 6,
-            expert: 1,
+}
+
+// The fixed control is the complete frozen implementation, without source edits.
+#[path = "fixed_cache.rs"]
+mod fixed_cache;
+pub(crate) enum PairStaging {
+    Fixed(fixed_cache::PairStaging),
+    Variable(VariableStaging),
+}
+impl PairStaging {
+    pub fn new(gpu: &Arc<Gpu>, mode: ExpertMode, pair_bytes: usize) -> Result<Option<Self>> {
+        let fixed = match mode {
+            ExpertMode::Stream => Some(fixed_cache::ExpertMode::Stream),
+            ExpertMode::BatchPair => Some(fixed_cache::ExpertMode::BatchPair),
+            ExpertMode::DeviceLru { budget_bytes } => {
+                Some(fixed_cache::ExpertMode::DeviceLru { budget_bytes })
+            }
+            ExpertMode::SegmentedLru { .. } => None,
         };
-        let b = Key {
-            layer: 6,
-            expert: 2,
-        };
-        let c = Key {
-            layer: 7,
-            expert: 1,
-        };
-        let (i, e) = p.victim();
-        assert!(!e);
-        p.commit(i, a).unwrap();
-        let (j, e) = p.victim();
-        assert!(!e);
-        p.commit(j, b).unwrap();
-        assert_eq!(p.hit(a).unwrap(), Some(i));
-        assert_eq!(p.hit(c).unwrap(), None);
-        let (v, e) = p.victim();
-        assert!(e);
-        assert_eq!(v, j);
-        // Simulate cancelled/failed upload: no commit, old AND new keys absent.
-        assert_eq!(p.hit(b).unwrap(), None);
-        assert_eq!(p.hit(c).unwrap(), None);
-        let (v, e) = p.victim();
-        assert!(!e);
-        p.commit(v, c).unwrap();
-        assert_eq!(p.hit(a).unwrap(), Some(i));
-        assert_eq!(p.hit(c).unwrap(), Some(v));
+        if let Some(fixed) = fixed {
+            return fixed_cache::PairStaging::new(gpu, fixed, pair_bytes)
+                .map(|x| x.map(Self::Fixed));
+        }
+        VariableStaging::new(gpu, mode, pair_bytes).map(|x| x.map(Self::Variable))
+    }
+    pub fn pair(
+        &mut self,
+        fallback: &DevBuf,
+        store: &mut HostStore,
+        layer: usize,
+        expert: usize,
+        spans: &[ExpertSpan; 2],
+        stats: &mut ExpertStats,
+        check: &mut impl FnMut() -> Result<()>,
+    ) -> Result<(DevBuf, DevBuf)> {
+        match self {
+            Self::Variable(s) => s.pair(fallback, store, layer, expert, spans, stats, check),
+            Self::Fixed(s) => {
+                let mut old = fixed_cache::ExpertStats {
+                    hits: stats.hits,
+                    misses: stats.misses,
+                    evictions: stats.evictions,
+                    read_bytes: stats.read_bytes,
+                    uploaded_bytes: stats.uploaded_bytes,
+                    upload_calls: stats.upload_calls,
+                };
+                let result = s.pair(fallback, store, layer, expert, spans, &mut old, check);
+                *stats = ExpertStats {
+                    hits: old.hits,
+                    misses: old.misses,
+                    evictions: old.evictions,
+                    read_bytes: old.read_bytes,
+                    uploaded_bytes: old.uploaded_bytes,
+                    upload_calls: old.upload_calls,
+                };
+                result
+            }
+        }
     }
 }

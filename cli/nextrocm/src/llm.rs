@@ -19,9 +19,12 @@ use std::{
 
 const USAGE: &str = "nextrocm llm engines | info MODEL | tokenize MODEL TEXT | prepare MODEL
 nextrocm llm generate MODEL --prompt TEXT | --prompt-file FILE | --ids FILE
-    [--max N] [--temp T] [--top-p P] [--seed N] [--gpu N] [--ctx N] [--ignore-eos]
+    [--max N] [--temp T] [--top-p P] [--seed N] [--gpu N] [--ctx N] [--ignore-eos] [--expert-gib G] [--inkling-host-embedding] [--inkling-cache-policy fixed|segmented]
 nextrocm llm serve MODEL_OR_ID [--host 127.0.0.1] [--port 8085] [--ctx N[,M...]]
-    [--parallel N] [--name ID] [--socket PATH] [--prompt-cache-mib N] [--cache-dir DIR]
+    [--parallel N] [--name ID] [--socket PATH] [--prompt-cache-mib N] [--cache-dir DIR] [--expert-gib G] [--inkling-host-embedding] [--inkling-cache-policy fixed|segmented]
+    --inkling-host-embedding: explicitly stream packed embedding rows for Inkling only
+    --inkling-cache-policy: explicit Inkling cache; omitted retains fixed default, segmented requires positive expert budget
+    --expert-gib: device expert-cache budget in GiB; 0 selects streaming for Inkling, omitted keeps engine default
 nextrocm llm start ID | --model FILE [serve options] | stop | logs [--no-follow]";
 
 pub(crate) fn engines() -> Vec<EngineKind> {
@@ -43,6 +46,28 @@ fn number<T: std::str::FromStr>(args: &[String], key: &str, default: T) -> Resul
         s.parse()
             .map_err(|_| format!("{key}: invalid number {s:?}"))
     })
+}
+/// Original nextcuda --expert-gib -> LoadOptions.expert_bytes contract, with
+/// checked parsing/conversion rather than a saturating float-to-usize cast.
+fn expert_budget(value: Option<&str>) -> Result<Option<usize>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let gib = value.parse::<f64>().map_err(|_| "invalid --expert-gib")?;
+    let bytes = gib * (1u64 << 30) as f64;
+    if !gib.is_finite()
+        || gib < 0.0
+        || !bytes.is_finite()
+        || bytes > usize::MAX as f64
+        || (gib > 0.0 && bytes < 1.0)
+    {
+        return Err("--expert-gib must be finite, nonnegative and fit a byte budget".into());
+    }
+    // u128 retains the rounded 2^64 boundary so usize::try_from rejects it;
+    // comparing against usize::MAX as f64 alone would miss that boundary.
+    let bytes =
+        usize::try_from(bytes.trunc() as u128).map_err(|_| "--expert-gib byte budget overflow")?;
+    Ok(Some(bytes))
 }
 fn validate_options(args: &[String], values: &[&str], flags: &[&str]) -> Result<(), String> {
     let mut it = args.iter();
@@ -74,14 +99,109 @@ fn options(k: &EngineKind) -> Vec<nextrocm_engine_core::EngineOption> {
 fn load_engine<'g>(
     f: &'g Gguf,
     gpus: &[Arc<Gpu>],
-    o: LoadOptions,
+    mut o: LoadOptions,
+    host_embedding: bool,
+    cache_policy: Option<InklingCachePolicy>,
 ) -> Result<Box<dyn Engine + 'g>, String> {
+    let selected_mode = inkling_load_mode(f, host_embedding, cache_policy, o.expert_bytes)?;
     let kinds = engines();
     let k = nextrocm_llm::kind_for(&kinds, f)?;
     for (var, value) in crate::opt_env(&options(k), nextrocm_engine_core::At::Load, k.name)? {
         std::env::set_var(var, value);
     }
+    if let Some(mode) = selected_mode {
+        o.expert_bytes = None; // Explicit policy is carried once, never conflicts.
+        return nextrocm_llm_inkling2::adapter::load_with_policies(
+            f,
+            gpus,
+            &o,
+            &mut |line| eprintln!("[{line}]"),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            mode,
+            if host_embedding {
+                nextrocm_llm_inkling2::device::EmbeddingMode::HostRow
+            } else {
+                nextrocm_llm_inkling2::device::EmbeddingMode::Resident
+            },
+        )
+        .map_err(|e| e.0);
+    }
     (k.load)(f, gpus, &o, &mut |line| eprintln!("[{line}]")).map_err(|e| e.0)
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InklingCachePolicy {
+    Fixed,
+    Segmented,
+}
+fn inkling_cache_policy(value: Option<&str>) -> Result<Option<InklingCachePolicy>, String> {
+    match value {
+        None => Ok(None),
+        Some("fixed") => Ok(Some(InklingCachePolicy::Fixed)),
+        Some("segmented") => Ok(Some(InklingCachePolicy::Segmented)),
+        Some(_) => Err("--inkling-cache-policy must be fixed or segmented".into()),
+    }
+}
+fn selected_inkling_mode(
+    arch: &str,
+    host_embedding: bool,
+    policy: Option<InklingCachePolicy>,
+    bytes: Option<usize>,
+) -> Result<Option<nextrocm_llm_inkling2::expert_cache::ExpertMode>, String> {
+    validate_host_embedding(arch, host_embedding)?;
+    if policy.is_some() && arch != "inkling2" {
+        return Err("--inkling-cache-policy requires Inkling".into());
+    }
+    if !host_embedding && policy.is_none() {
+        return Ok(None);
+    }
+    let mode = inkling_expert_mode(bytes)?;
+    use nextrocm_llm_inkling2::expert_cache::ExpertMode;
+    Ok(Some(if policy == Some(InklingCachePolicy::Segmented) {
+        match mode {
+            ExpertMode::DeviceLru {budget_bytes} => ExpertMode::SegmentedLru {budget_bytes},
+            _ => return Err("segmented cache requires a positive --expert-gib budget; omit policy for streaming".into()),
+        }
+    } else {
+        mode
+    }))
+}
+fn inkling_load_mode(
+    f: &Gguf,
+    host_embedding: bool,
+    policy: Option<InklingCachePolicy>,
+    bytes: Option<usize>,
+) -> Result<Option<nextrocm_llm_inkling2::expert_cache::ExpertMode>, String> {
+    let mode = selected_inkling_mode(f.architecture(), host_embedding, policy, bytes)?;
+    if let Some(mode) = mode {
+        // Actual tensor-derived largest pair and metadata budget checked BEFORE opening GPU.
+        let weights = nextrocm_llm_inkling2::weights::Weights::read(f)?;
+        mode.extra_bytes(weights.largest_expert_pair_bytes())?;
+    }
+    Ok(mode)
+}
+fn validate_host_embedding(arch: &str, selected: bool) -> Result<(), String> {
+    if selected && arch != "inkling2" {
+        return Err("--inkling-host-embedding requires Inkling".into());
+    }
+    Ok(())
+}
+fn inkling_expert_mode(
+    bytes: Option<usize>,
+) -> Result<nextrocm_llm_inkling2::expert_cache::ExpertMode, String> {
+    use nextrocm_llm_inkling2::expert_cache::{ExpertMode, MAX_CACHE_BYTES};
+    match bytes {
+        Some(0) => Ok(ExpertMode::Stream),
+        None => Ok(ExpertMode::DeviceLru {
+            budget_bytes: MAX_CACHE_BYTES,
+        }),
+        Some(n) => {
+            let budget_bytes = u64::try_from(n).map_err(|_| "expert budget overflow")?;
+            if budget_bytes > MAX_CACHE_BYTES {
+                return Err("Inkling expert cache exceeds1GiB".into());
+            }
+            Ok(ExpertMode::DeviceLru { budget_bytes })
+        }
+    }
 }
 pub(crate) fn chat_of(f: &Gguf) -> Result<ChatTemplate, String> {
     if f.architecture() == nextrocm_llm_stablelm::ARCH {
@@ -253,11 +373,17 @@ fn generate(args: &[String]) -> Result<(), String> {
             "--gpu",
             "--ctx",
             "--effort",
+            "--expert-gib",
+            "--inkling-cache-policy",
         ],
-        &["--ignore-eos", "--no-mtp"],
+        &["--ignore-eos", "--no-mtp", "--inkling-host-embedding"],
     )?;
+    let expert_bytes = expert_budget(opt(args, "--expert-gib"))?;
+    let cache_policy = inkling_cache_policy(opt(args, "--inkling-cache-policy"))?;
+    let host_embedding = args.iter().any(|a| a == "--inkling-host-embedding");
     let model = args.get(1).ok_or(USAGE)?;
     let f = Gguf::open(Path::new(model)).map_err(|e| e.0)?;
+    inkling_load_mode(&f, host_embedding, cache_policy, expert_bytes)?;
     let trained_context = context_limit(&f)?;
     let tok = Tokenizer::from_gguf(&f)?;
     let ids = prompt_ids(&f, &tok, args)?;
@@ -297,8 +423,11 @@ fn generate(args: &[String]) -> Result<(), String> {
         LoadOptions {
             draft: false,
             kv: (ctx, 1),
+            expert_bytes,
             ..Default::default()
         },
+        host_embedding,
+        cache_policy,
     )?;
     let mut session = eng.session(ctx).map_err(|e| e.0)?;
     let start = Instant::now();
@@ -411,11 +540,17 @@ fn serve_file(args: &[String]) -> Result<(), String> {
             "--keep-requests",
             "--max-tokens",
             "--cors",
+            "--expert-gib",
+            "--inkling-cache-policy",
         ],
-        &["--no-mtp", "--here"],
+        &["--no-mtp", "--here", "--inkling-host-embedding"],
     )?;
+    let expert_bytes = expert_budget(opt(args, "--expert-gib"))?;
+    let cache_policy = inkling_cache_policy(opt(args, "--inkling-cache-policy"))?;
+    let host_embedding = args.iter().any(|a| a == "--inkling-host-embedding");
     let model = args.get(1).ok_or(USAGE)?;
     let f: &'static Gguf = Box::leak(Box::new(Gguf::open(Path::new(model)).map_err(|e| e.0)?));
+    inkling_load_mode(&f, host_embedding, cache_policy, expert_bytes)?;
     let trained_context = context_limit(f)?;
     let chat = chat_of(f)?;
     let tok = Tokenizer::from_gguf(f)?;
@@ -474,8 +609,11 @@ fn serve_file(args: &[String]) -> Result<(), String> {
         LoadOptions {
             draft: false,
             kv: (reserve, slots.len()),
+            expert_bytes,
             ..Default::default()
         },
+        host_embedding,
+        cache_policy,
     )?;
     let mut cache = PromptCache::new(cache_bytes);
     if let Some(dir) = opt(args, "--cache-dir") {
@@ -731,6 +869,121 @@ pub(crate) fn cmd(cfg: &Config, args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn segmented_policy_is_explicit_and_preserves_default_and_streaming() {
+        use nextrocm_llm_inkling2::expert_cache::ExpertMode;
+        assert_eq!(inkling_cache_policy(None).unwrap(), None);
+        assert!(inkling_cache_policy(Some("auto")).is_err());
+        assert_eq!(
+            selected_inkling_mode("qwen35", false, None, Some(0)).unwrap(),
+            None
+        );
+        assert!(
+            selected_inkling_mode("qwen35", false, Some(InklingCachePolicy::Segmented), None)
+                .is_err()
+        );
+        assert_eq!(
+            selected_inkling_mode("inkling2", false, None, None).unwrap(),
+            None
+        );
+        assert_eq!(
+            selected_inkling_mode("inkling2", true, None, Some(0)).unwrap(),
+            Some(ExpertMode::Stream)
+        );
+        assert_eq!(
+            selected_inkling_mode(
+                "inkling2",
+                true,
+                Some(InklingCachePolicy::Fixed),
+                Some(939524096)
+            )
+            .unwrap(),
+            Some(ExpertMode::DeviceLru {
+                budget_bytes: 939524096
+            })
+        );
+        assert_eq!(
+            selected_inkling_mode(
+                "inkling2",
+                true,
+                Some(InklingCachePolicy::Segmented),
+                Some(939524096)
+            )
+            .unwrap(),
+            Some(ExpertMode::SegmentedLru {
+                budget_bytes: 939524096
+            })
+        );
+        assert!(selected_inkling_mode(
+            "inkling2",
+            false,
+            Some(InklingCachePolicy::Segmented),
+            Some(0)
+        )
+        .is_err());
+        assert!(selected_inkling_mode(
+            "inkling2",
+            false,
+            Some(InklingCachePolicy::Segmented),
+            Some(1073741825)
+        )
+        .is_err());
+    }
+    #[test]
+    fn host_embedding_is_explicit_inkling_only_and_preserves_expert_budget() {
+        use nextrocm_llm_inkling2::expert_cache::ExpertMode;
+        assert!(validate_host_embedding("inkling2", true).is_ok());
+        assert!(validate_host_embedding("qwen35", true).is_err());
+        assert!(validate_host_embedding("qwen35", false).is_ok());
+        assert_eq!(inkling_expert_mode(Some(0)).unwrap(), ExpertMode::Stream);
+        assert_eq!(
+            inkling_expert_mode(expert_budget(Some("0.875")).unwrap()).unwrap(),
+            ExpertMode::DeviceLru {
+                budget_bytes: 939524096
+            }
+        );
+        assert_eq!(
+            inkling_expert_mode(None).unwrap(),
+            ExpertMode::DeviceLru {
+                budget_bytes: 1073741824
+            }
+        );
+        assert!(inkling_expert_mode(Some(1073741825)).is_err());
+    }
+    #[test]
+    fn expert_budget_preserves_default_and_explicit_streaming() {
+        assert_eq!(expert_budget(None).unwrap(), None);
+        assert_eq!(expert_budget(Some("0")).unwrap(), Some(0));
+        assert_eq!(expert_budget(Some("-0")).unwrap(), Some(0));
+        assert_eq!(expert_budget(Some("0.5")).unwrap(), Some(1 << 29));
+        assert_eq!(expert_budget(Some("1")).unwrap(), Some(1 << 30));
+        assert_eq!(
+            expert_budget(Some("0.000000000931322574615478515625")).unwrap(),
+            Some(1)
+        );
+    }
+    #[test]
+    fn expert_budget_rejects_invalid_and_overflow_before_loading() {
+        for input in ["", "bad", "NaN", "inf", "-inf", "-1", "1e300", "1e-20"] {
+            assert!(expert_budget(Some(input)).is_err(), "{input}");
+        }
+        let boundary = ((usize::MAX as u128 + 1) / (1u128 << 30)).to_string();
+        assert!(expert_budget(Some(&boundary)).is_err());
+        let args = |sub: &str| {
+            vec![
+                sub.into(),
+                "/missing/model.gguf".into(),
+                "--expert-gib".into(),
+                "NaN".into(),
+            ]
+        };
+        assert!(generate(&args("generate"))
+            .unwrap_err()
+            .contains("--expert-gib"));
+        assert!(serve_file(&args("serve"))
+            .unwrap_err()
+            .contains("--expert-gib"));
+    }
     #[test]
     fn inkling_sampling_error_is_fallible_before_commit() {
         use nextrocm_llm::Sampler;

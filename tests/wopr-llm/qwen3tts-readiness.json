@@ -1,0 +1,223 @@
+{
+  "status": "READINESS_ONLY_NO_GPU",
+  "source_commit": "cbc7e320c423f9e20dc3c3b1bd3ea291008c8d25",
+  "source_sha256": {
+    "audio/qwen3tts/src/lib.rs": "38a7a67650f11570085a3305744c9d198b1382a921e1190753e6ace8aa1e7ff2",
+    "audio/qwen3tts/src/validation.rs": "357ab8368003035629525634b810073d1e4c5a99591450b0579b2a9a90390d74",
+    "audio/qwen3tts/src/check.rs": "8e5f57dd69349de3c8eac811d46b37842cf4d6a947869e257fc6487ce2294079",
+    "audio/qwen3tts/examples/variants_lifecycle.rs": "7b9500c9c0f9eb8bc4b9a69e2f15cf5365cc882707c7b8ae3d8c1d492b6b3cab",
+    "cli/nextrocm/src/audio.rs": "b8c390006324fda29f2e39896ac2a62777a4f1db7c1df62e886930dffffccb85"
+  },
+  "assets_from_published_cards": {
+    "qwen3-tts-base": {
+      "card": "model-cards/audio/qwen3-tts-base.yml",
+      "card_sha256": "0804a5292132f4109be5e0c5f50ab772a7d8ccf552ef315df35715ccab2c3ddd",
+      "files": {
+        "model": {
+          "key": "q3t-base-model",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base/resolve/fd4b254389122332181a7c3db7f27e918eec64e3/model.safetensors",
+          "size": 3857413744,
+          "sha256": "38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c",
+          "path": "qwen3-tts-base/model.safetensors"
+        },
+        "config": {
+          "key": "q3t-base-config",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base/resolve/fd4b254389122332181a7c3db7f27e918eec64e3/config.json",
+          "size": 4494,
+          "sha256": "b4f01752d15a488abde3e1ab44723ae4f4b9e68a4037257b098b3737893cc1f9",
+          "path": "qwen3-tts-base/config.json"
+        },
+        "vocab": {
+          "key": "q3t-vocab",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/vocab.json",
+          "size": 2776833,
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+          "path": "qwen3-tts/tokenizer/vocab.json"
+        },
+        "merges": {
+          "key": "q3t-merges",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/merges.txt",
+          "size": 1671839,
+          "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+          "path": "qwen3-tts/tokenizer/merges.txt"
+        },
+        "tokenizer-config": {
+          "key": "q3t-tokenizer-config",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/tokenizer_config.json",
+          "size": 7344,
+          "sha256": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+          "path": "qwen3-tts/tokenizer/tokenizer_config.json"
+        },
+        "codec": {
+          "key": "q3t-codec",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/speech_tokenizer/model.safetensors",
+          "size": 682293092,
+          "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+          "path": "qwen3-tts/speech_tokenizer/model.safetensors"
+        }
+      }
+    },
+    "qwen3-tts-custom": {
+      "card": "model-cards/audio/qwen3-tts-custom.yml",
+      "card_sha256": "0b618319930af50a6123356ad6b81a2e19ef2f584da6ca422f5dc475dd6e23fb",
+      "files": {
+        "model": {
+          "key": "q3t-custom-model",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/model.safetensors",
+          "size": 3833402552,
+          "sha256": "38b1d5971bdbd982b561cccec982669a53b0537c3cf5e9bd4778ed07bb2f5137",
+          "path": "qwen3-tts/custom/model.safetensors"
+        },
+        "config": {
+          "key": "q3t-custom-config",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/config.json",
+          "size": 4908,
+          "sha256": "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9",
+          "path": "qwen3-tts/custom/config.json"
+        },
+        "vocab": {
+          "key": "q3t-vocab",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/vocab.json",
+          "size": 2776833,
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+          "path": "qwen3-tts/tokenizer/vocab.json"
+        },
+        "merges": {
+          "key": "q3t-merges",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/merges.txt",
+          "size": 1671839,
+          "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+          "path": "qwen3-tts/tokenizer/merges.txt"
+        },
+        "tokenizer-config": {
+          "key": "q3t-tokenizer-config",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/tokenizer_config.json",
+          "size": 7344,
+          "sha256": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+          "path": "qwen3-tts/tokenizer/tokenizer_config.json"
+        },
+        "codec": {
+          "key": "q3t-codec",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/speech_tokenizer/model.safetensors",
+          "size": 682293092,
+          "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+          "path": "qwen3-tts/speech_tokenizer/model.safetensors"
+        }
+      }
+    },
+    "qwen3-tts-design": {
+      "card": "model-cards/audio/qwen3-tts-design.yml",
+      "card_sha256": "ce0c13b90270b3568b1f8bdeb449aad99bd961ecd51727be03299daa5207ac30",
+      "files": {
+        "model": {
+          "key": "q3t-design-model",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign/resolve/5ecdb67327fd37bb2e042aab12ff7391903235d3/model.safetensors",
+          "size": 3833402552,
+          "sha256": "391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522",
+          "path": "qwen3-tts-design/model.safetensors"
+        },
+        "config": {
+          "key": "q3t-design-config",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign/resolve/5ecdb67327fd37bb2e042aab12ff7391903235d3/config.json",
+          "size": 4421,
+          "sha256": "aecd2cc4c1fe9edef1cb7ca7c401685a43879ad43f3f9e883f1c6760b61731e0",
+          "path": "qwen3-tts-design/config.json"
+        },
+        "vocab": {
+          "key": "q3t-vocab",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/vocab.json",
+          "size": 2776833,
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+          "path": "qwen3-tts/tokenizer/vocab.json"
+        },
+        "merges": {
+          "key": "q3t-merges",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/merges.txt",
+          "size": 1671839,
+          "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+          "path": "qwen3-tts/tokenizer/merges.txt"
+        },
+        "tokenizer-config": {
+          "key": "q3t-tokenizer-config",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/tokenizer_config.json",
+          "size": 7344,
+          "sha256": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+          "path": "qwen3-tts/tokenizer/tokenizer_config.json"
+        },
+        "codec": {
+          "key": "q3t-codec",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051f131929182e2c023b9537f8b1c68adfe/speech_tokenizer/model.safetensors",
+          "size": 682293092,
+          "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+          "path": "qwen3-tts/speech_tokenizer/model.safetensors"
+        }
+      }
+    }
+  },
+  "hardware": {
+    "physical_bytes": 4294967296,
+    "suite_sampled_cap_bytes": 4026531840,
+    "host_reserve_bytes": 8589934592
+  },
+  "base_design_plan": {
+    "resident_upper_bytes": 3893536260,
+    "conversion_upper_bytes": 75497472,
+    "margin_bytes": 268435456,
+    "required_free_bytes": 4237469188,
+    "physical_headroom_bytes": 57498108,
+    "status": "ACTUAL_HEADERS_REPRODUCED_NOT_FIT"
+  },
+  "prerequisites": [
+    "Parent verify all six role files against published cards (full hashes); Custom model missing, Custom inference blocked.",
+    "files_in requires model/config/vocab/merges/tokenizer_config and speech_tokenizer/model.safetensors in EACH directory. Verify existing paths/symlinks or prepare isolated role-layout; do not modify production models.",
+    "Parent measure actual free memory in runtime context. Original available() falls back to total if free absent; require nonmissing free externally. Do not relax load admission or wrapper cap.",
+    "Locate original CPU arrays at historical /tmp/nextrocm-qwen3tts-variants-reference/{design,base_xvector,base_in_context} and original /tmp/nextrocm-qwen3tts-oracle. Local repository retains logs, not these arrays or complete provenance. Pin/validate before numerical use."
+  ],
+  "initial_proposal": {
+    "purpose": "Bounded unchanged load/prompt diagnostic after prerequisites; admission rejection is BLOCKED_CAPACITY, not numeric failure or success.",
+    "timeout_seconds": 180,
+    "argv": [
+      "$CLI",
+      "audio",
+      "check",
+      "$ORIGINAL_DESIGN_REFERENCE",
+      "--dir",
+      "$DESIGN_ROLE_LAYOUT",
+      "--set",
+      "NS_Q3T_INT8=0",
+      "--stages",
+      "prompt"
+    ],
+    "runtime": "parent-pinned audio DSO via NEXTROCM_LIB; no embedded-runtime assumption",
+    "scope": "CLI only prints worst error and returns Ok. Exit0 is NOT numeric PASS. Require explicit external finite/shape/stage and prospective original acceptance criteria; no invented or relaxed threshold."
+  },
+  "lifecycle_followup": {
+    "build": [
+      "cargo",
+      "build",
+      "--release",
+      "-p",
+      "nextrocm-audio-qwen3tts",
+      "--example",
+      "variants_lifecycle"
+    ],
+    "argv": [
+      "$VARIANTS_LIFECYCLE",
+      "$DESIGN_ROLE_LAYOUT",
+      "$BASE_ROLE_LAYOUT",
+      "$CUSTOMVOICE_REFERENCE_WAV",
+      "$NEW_OUTPUT"
+    ],
+    "timeout_seconds": 600,
+    "settings": "Published fixed half NS_Q3T_INT8=0, greedy seed0, eight codec frames/0.64s, sequential Design then Base x-vector and in-context.",
+    "reference_wav_sha256": "9b6de06d6bb11b4dd5aa43377a78d6aa046f7f9fa565c6f28da23a12213085a3",
+    "reference_wav_path_hint": "/tmp/nextrocm-qwen3tts-variants-reference/base_in_context/ref.wav",
+    "gates": "Published finite/nonsilent 24kHz mono, invalid inputs before progress, immediate/partial cancellation and waveform reuse <=1e-6, WAV roundtrip, initial/drop allocator0. External stricter tracked/sample cap required; no oracle accuracy claim."
+  },
+  "numeric_limitations": [
+    "Historical Design reference intentionally generation-limited (31 vs native39 frames); prefix agreement does not prove EOS. Current published code_error checks whole lengths.",
+    "Historical Base greedy CPU fixture near-silence is not useful speech quality proof.",
+    "Original reference generator has no complete model/source provenance manifest; recover original evidence, do not regenerate candidate outputs as reference."
+  ],
+  "no_execution": true
+}

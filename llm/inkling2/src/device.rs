@@ -32,7 +32,14 @@ impl DeviceState {
         })
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbeddingMode {
+    Resident,
+    HostRow,
+}
+
 pub struct DeviceWeights {
+    embedding_row: Option<DevBuf>,
     dense: BTreeMap<String, DevBuf>,
     expert: DevBuf,
     staging: Option<PairStaging>,
@@ -76,6 +83,25 @@ impl DeviceWeights {
         mode: ExpertMode,
         mut check: impl FnMut() -> Result<()>,
     ) -> Result<Self> {
+        Self::load_with_policies(
+            store,
+            gpu,
+            plan,
+            host_available,
+            mode,
+            EmbeddingMode::Resident,
+            &mut check,
+        )
+    }
+    pub fn load_with_policies(
+        store: &mut HostStore,
+        gpu: &Arc<Gpu>,
+        plan: &ExecutionPlan,
+        host_available: u64,
+        mode: ExpertMode,
+        embedding: EmbeddingMode,
+        mut check: impl FnMut() -> Result<()>,
+    ) -> Result<Self> {
         if gpu.raw().is_null() {
             return Err("device weights require a real GPU".into());
         }
@@ -90,12 +116,15 @@ impl DeviceWeights {
             .ok_or("device free memory unavailable")?;
         let weights = Weights::read(store.file())?;
         let estimate =
-            Estimate::text_with_expert_mode(&weights, plan, 1, host_available, free, mode)?;
+            Estimate::text_with_policies(&weights, plan, 1, host_available, free, mode, embedding)?;
         let entries: Vec<_> = store
             .file()
             .tensors
             .iter()
-            .filter(|t| !t.name.contains("_exps.weight"))
+            .filter(|t| {
+                !t.name.contains("_exps.weight")
+                    && !(embedding == EmbeddingMode::HostRow && t.name == "token_embd.weight")
+            })
             .map(|t| (t.name.clone(), t.bytes))
             .collect();
         let mut dense = BTreeMap::new();
@@ -120,6 +149,12 @@ impl DeviceWeights {
                 .ok_or("uploaded size overflow")?;
             dense.insert(name, b);
         }
+        let embedding_row = if embedding == EmbeddingMode::HostRow {
+            check()?;
+            Some(DevBuf::new(gpu, 2448).map_err(|e| e.0)?)
+        } else {
+            None
+        };
         if uploaded != estimate.resident_weights {
             return Err("resident inventory differs from plan".into());
         }
@@ -134,6 +169,7 @@ impl DeviceWeights {
         check()?;
         let state = DeviceState::allocate(gpu, plan)?;
         Ok(Self {
+            embedding_row,
             dense,
             expert,
             staging,
@@ -143,6 +179,41 @@ impl DeviceWeights {
             state,
             estimate,
         })
+    }
+    /// A returned view is consumed on the same GPU queue before the next row upload.
+    /// write synchronizes prior consumers and this copy; the existing host staging
+    /// slice is never retained after the callback.
+    pub(crate) fn embedding(
+        &self,
+        store: &mut HostStore,
+        token: u32,
+        mut check: impl FnMut() -> Result<()>,
+    ) -> Result<DevBuf> {
+        check()?;
+        if token >= 200058 || !Arc::ptr_eq(&self.source_identity, &store.identity()) {
+            return Err("embedding token/source mismatch".into());
+        }
+        let offset = u64::from(token)
+            .checked_mul(2448)
+            .ok_or("embedding offset overflow")?;
+        if let Some(row) = &self.embedding_row {
+            store.stream("token_embd.weight", offset, 2448, |at, bytes| {
+                check()?;
+                if at != 0 || bytes.len() != 2448 {
+                    return Err("embedding row span mismatch".into());
+                }
+                row.write(0, bytes).map_err(|e| e.0)
+            })?;
+            check()?;
+            row.view(0, 2448).map_err(|e| e.0)
+        } else {
+            self.tensor("token_embd.weight")?
+                .view(
+                    usize::try_from(offset).map_err(|_| "embedding offset exceeds usize")?,
+                    2448,
+                )
+                .map_err(|e| e.0)
+        }
     }
     pub fn expert_stats(&self) -> ExpertStats {
         self.stats

@@ -54,6 +54,27 @@ impl TextGraph {
         mode: crate::expert_cache::ExpertMode,
         mut cancel: impl FnMut() -> Result<()>,
     ) -> Result<Self> {
+        Self::load_with_policies(
+            model,
+            config,
+            gpu,
+            context,
+            host_available,
+            mode,
+            crate::device::EmbeddingMode::Resident,
+            &mut cancel,
+        )
+    }
+    pub fn load_with_policies(
+        model: &Path,
+        config: &MiniConfig,
+        gpu: &Arc<Gpu>,
+        context: usize,
+        host_available: u64,
+        mode: crate::expert_cache::ExpertMode,
+        embedding: crate::device::EmbeddingMode,
+        mut cancel: impl FnMut() -> Result<()>,
+    ) -> Result<Self> {
         if context == 0 || context > 65536 {
             return Err("initial text graph context must be1..65536".into());
         }
@@ -63,12 +84,13 @@ impl TextGraph {
         let plan = ExecutionPlan::new(config, context)?;
         let cursor = Cursor::new(plan.clone());
         let mut store = HostStore::open(model, host_available)?;
-        let weights = DeviceWeights::load_with_expert_mode(
+        let weights = DeviceWeights::load_with_policies(
             &mut store,
             gpu,
             &plan,
             host_available,
             mode,
+            embedding,
             &mut cancel,
         )?;
         let sizes = [
@@ -279,9 +301,7 @@ impl TextGraph {
         cancel()?;
         let row = self
             .weights
-            .tensor("token_embd.weight")?
-            .view(token as usize * 2448, 2448)
-            .map_err(|e| e.0)?;
+            .embedding(&mut self.store, token, &mut *cancel)?;
         self.quant
             .decode(&row, GType::Q8_0, 1, H, self.b("hidden"))?;
         self.primitive.rms(

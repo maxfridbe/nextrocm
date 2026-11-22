@@ -4,6 +4,7 @@ use crate::{plan::ExecutionPlan, store::STAGING_BYTES, weights::Weights, Result}
 #[derive(Clone, Debug)]
 pub struct Estimate {
     pub resident_weights: u64,
+    pub embedding_row: u64,
     pub kv: u64,
     pub convolution_history: u64,
     pub expert_pair: u64,
@@ -50,10 +51,43 @@ impl Estimate {
         device_free: u64,
         mode: crate::expert_cache::ExpertMode,
     ) -> Result<Self> {
+        Self::text_with_policies(
+            w,
+            p,
+            prefill_rows,
+            host_available,
+            device_free,
+            mode,
+            crate::device::EmbeddingMode::Resident,
+        )
+    }
+    pub fn text_with_policies(
+        w: &Weights<'_>,
+        p: &ExecutionPlan,
+        prefill_rows: usize,
+        host_available: u64,
+        device_free: u64,
+        mode: crate::expert_cache::ExpertMode,
+        embedding: crate::device::EmbeddingMode,
+    ) -> Result<Self> {
         if prefill_rows == 0 || prefill_rows > 32 || prefill_rows > p.context() {
             return Err("planning prefill rows must be 1..min(32,context)".into());
         }
-        let resident_weights = w.non_expert_bytes();
+        let (resident_weights, embedding_row) = match embedding {
+            crate::device::EmbeddingMode::Resident => (w.non_expert_bytes(), 0),
+            crate::device::EmbeddingMode::HostRow => {
+                let tensor = w.tensor("token_embd.weight").ok_or("missing embedding")?;
+                if tensor.bytes != 492_106_752 {
+                    return Err("embedding storage differs".into());
+                }
+                (
+                    w.non_expert_bytes()
+                        .checked_sub(tensor.bytes)
+                        .ok_or("embedding residency underflow")?,
+                    2448,
+                )
+            }
+        };
         let kv = p.kv_storage_bytes(4)?;
         // Four independent convolution states per visit: K,V,post-attention,post-MLP;
         // three previous inputs for width-four causal convolution (merged source).
@@ -74,6 +108,7 @@ impl Estimate {
         )?;
         let (expert_cache, expert_host_pair) = mode.extra_bytes(expert_pair)?;
         let tracked = [
+            embedding_row,
             expert_cache,
             kv,
             convolution_history,
@@ -95,6 +130,7 @@ impl Estimate {
         }
         Ok(Self {
             resident_weights,
+            embedding_row,
             kv,
             convolution_history,
             expert_pair,

@@ -296,6 +296,65 @@ mod tests {
             .collect()
     }
     #[test]
+    fn host_embedding_budget_keeps_margin_and_checks_free() {
+        use crate::{device::EmbeddingMode, expert_cache::ExpertMode, memory::Estimate};
+        let tensors = fixture();
+        let w = Weights::validate_directory(&tensors).unwrap();
+        let c = crate::config::MiniConfig::from_official_json(include_bytes!(
+            "../tests/mini-config.json"
+        ))
+        .unwrap();
+        let plan = crate::plan::ExecutionPlan::new(&c, 4096).unwrap();
+        let mode = ExpertMode::DeviceLru {
+            budget_bytes: 896 * 1024 * 1024,
+        };
+        let base = Estimate::text_with_policies(
+            &w,
+            &plan,
+            1,
+            48 << 30,
+            8_000_000_000,
+            mode,
+            EmbeddingMode::Resident,
+        )
+        .unwrap();
+        let host = Estimate::text_with_policies(
+            &w,
+            &plan,
+            1,
+            48 << 30,
+            8_000_000_000,
+            mode,
+            EmbeddingMode::HostRow,
+        )
+        .unwrap();
+        assert_eq!(base.tracked - host.tracked, 492_106_752 - 2448);
+        assert_eq!(host.embedding_row, 2448);
+        assert_eq!(base.host_staging, host.host_staging);
+        assert_eq!(host.driver_margin, 1 << 30);
+        assert_eq!(host.device_total, 3_972_302_320);
+        assert!(Estimate::text_with_policies(
+            &w,
+            &plan,
+            1,
+            48 << 30,
+            host.device_total - 1,
+            mode,
+            EmbeddingMode::HostRow
+        )
+        .is_err());
+        assert!(Estimate::text_with_policies(
+            &w,
+            &plan,
+            1,
+            48 << 30,
+            host.device_total,
+            mode,
+            EmbeddingMode::HostRow
+        )
+        .is_ok());
+    }
+    #[test]
     fn actual_mixed_directory_and_repeated_scales() {
         let tensors = fixture();
         let w = Weights::validate_directory(&tensors).unwrap();

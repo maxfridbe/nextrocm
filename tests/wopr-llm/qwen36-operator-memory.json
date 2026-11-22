@@ -1,0 +1,46 @@
+{
+  "scope": "source-derived allocation estimates for four actual MoE matrices; one case at a time; excludes driver/events; actualmemorywatchdog required",
+  "required_architecture_metadata": "qwen35moe",
+  "source_sha256": {
+    "cli/nextrocm/examples/qwen36_scalar_check.rs": "ff0ff5c692c306c51282cf1112b02c5c9930309325dcf291cd7d1aa7b8d71a36",
+    "cli/nextrocm/examples/qwen36_batch_check.rs": "57c34f03a05ead742545bdd17040f56c86928f0fe16336748b79cd8a1d233471"
+  },
+  "rows": [
+    {
+      "name": "gate",
+      "rows": 512,
+      "cols": 2048,
+      "packed_bytes": 589824,
+      "scalar_guarded_device_bytes": 609328,
+      "batch_guarded_device_bytes": 2018048
+    },
+    {
+      "name": "up",
+      "rows": 512,
+      "cols": 2048,
+      "packed_bytes": 589824,
+      "scalar_guarded_device_bytes": 609328,
+      "batch_guarded_device_bytes": 2018048
+    },
+    {
+      "name": "down",
+      "rows": 2048,
+      "cols": 512,
+      "packed_bytes": 860160,
+      "scalar_guarded_device_bytes": 898096,
+      "batch_guarded_device_bytes": 2964224
+    },
+    {
+      "name": "router",
+      "rows": 256,
+      "cols": 2048,
+      "packed_bytes": 2097152,
+      "scalar_guarded_device_bytes": 2112560,
+      "batch_guarded_device_bytes": 4895488
+    }
+  ],
+  "scalar_requires": "NS_PROFILE=gpu",
+  "initial_reps": 1,
+  "not_full_model": true,
+  "device_expert_cache": 0
+}

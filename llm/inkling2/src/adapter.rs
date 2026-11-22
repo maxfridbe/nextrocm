@@ -213,6 +213,42 @@ fn load_impl<'g>(
     cancel: Arc<AtomicBool>,
     mode: crate::expert_cache::ExpertMode,
 ) -> Result<Box<dyn Engine + 'g>> {
+    load_impl_with_embedding(
+        f,
+        gpus,
+        o,
+        log,
+        cancel,
+        mode,
+        crate::device::EmbeddingMode::Resident,
+    )
+}
+/// Explicit isolated diagnostic policy. Defaults and registry loading stay Resident.
+pub fn load_with_policies<'g>(
+    f: &'g Gguf,
+    gpus: &[Arc<Gpu>],
+    o: &LoadOptions,
+    log: &mut dyn FnMut(String),
+    cancel: Arc<AtomicBool>,
+    mode: crate::expert_cache::ExpertMode,
+    embedding: crate::device::EmbeddingMode,
+) -> Result<Box<dyn Engine + 'g>> {
+    if o.expert_bytes.is_some() {
+        return Err(err(
+            "explicit expert mode conflicts with options expert_bytes",
+        ));
+    }
+    load_impl_with_embedding(f, gpus, o, log, cancel, mode, embedding)
+}
+fn load_impl_with_embedding<'g>(
+    f: &'g Gguf,
+    gpus: &[Arc<Gpu>],
+    o: &LoadOptions,
+    log: &mut dyn FnMut(String),
+    cancel: Arc<AtomicBool>,
+    mode: crate::expert_cache::ExpertMode,
+    embedding: crate::device::EmbeddingMode,
+) -> Result<Box<dyn Engine + 'g>> {
     let start = Instant::now();
     if cancel.load(Ordering::Relaxed) {
         return Err(err("Inkling load cancelled"));
@@ -231,17 +267,24 @@ fn load_impl<'g>(
     // Insufficient cache/free/UMA memory is an error, never an implicit fallback.
     mode.extra_bytes(w.largest_expert_pair_bytes())
         .map_err(err)?;
-    let bytes = w.non_expert_bytes();
+    let bytes = match embedding {
+        crate::device::EmbeddingMode::Resident => w.non_expert_bytes(),
+        crate::device::EmbeddingMode::HostRow => w
+            .non_expert_bytes()
+            .checked_sub(492_106_752)
+            .ok_or_else(|| err("embedding budget underflow"))?,
+    };
     let cfg = MiniConfig::from_official_json(include_bytes!("../assets/mini-config.json"))
         .map_err(err)?;
     let gpu = gpus[0].clone();
-    let graph = TextGraph::load_with_expert_mode(
+    let graph = TextGraph::load_with_policies(
         &f.paths[0],
         &cfg,
         &gpu,
         context,
         available()?,
         mode,
+        embedding,
         || {
             if cancel.load(Ordering::Relaxed) {
                 Err("Inkling load cancelled".into())
@@ -252,7 +295,7 @@ fn load_impl<'g>(
     )
     .map_err(err)?;
     let state_bytes = graph.state_bytes();
-    log(format!("Inkling native F32 text: one session, context{context}, packed resident{bytes}, expert policy {mode:?}; no vision/tools/draft"));
+    log(format!("Inkling native F32 text: one session, context{context}, packed resident{bytes}, expert policy {mode:?}, embedding {embedding:?}; no vision/tools/draft"));
     Ok(Box::new(Model {
         gpu,
         live: Mutex::new(Live {

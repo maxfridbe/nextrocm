@@ -1,0 +1,98 @@
+{
+  "scope": "Resume only Qwen3 Coder and Qwen3.6 after preserved 180-second timeout; parent serial queue, unchanged 32-token prompt/settings.",
+  "cli_sha256": "10b54d28cbf4f42f73d7eae025642cdfa55236432a5425de918c0926ea783dbb",
+  "runtime_sha256": "c7726dec87d75352d6a7233d39271319dea2c2d26c041146811fb41346006e97",
+  "prompt": "Explain why the sky is blue in three short sentences.",
+  "environment": {
+    "NEXTROCM_LIB": "$LLM_DSO",
+    "NS_PROFILE": "0",
+    "NS_Q35_CHUNK": "1",
+    "NS_Q35_SCALAR": "0",
+    "NS_Q35_HOST_MIB": "0",
+    "NS_Q35_PREFETCH_MIB": "0",
+    "NS_Q35_RECORD_EXPERTS": "0"
+  },
+  "unset_environment": [
+    "NS_Q35_EXPERT_PROFILE"
+  ],
+  "load_policy": "CLI LoadOptions draft=false,kv=(512,1),expert_bytes=None. Qwen35 maps None to0 expert cache; Qwen3Moe always streams experts, no device expert cache. StableLM packedweights +fp16KV. No server prompt-cache allocation.",
+  "cases": [
+    {
+      "id": "qwen3-coder-30b",
+      "model": "/var/home/maxfridbe/vibe-lowvram/models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+      "model_sha256": "fadc3e5f8d42bf7e894a785b05082e47daee4df26680389817e2093056f088ad",
+      "argv": [
+        "$CLI",
+        "llm",
+        "generate",
+        "/var/home/maxfridbe/vibe-lowvram/models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+        "--prompt",
+        "Explain why the sky is blue in three short sentences.",
+        "--max",
+        "32",
+        "--temp",
+        "0",
+        "--seed",
+        "1",
+        "--gpu",
+        "0",
+        "--ctx",
+        "512"
+      ]
+    },
+    {
+      "id": "qwen36-35b",
+      "model": "/var/home/maxfridbe/models/qwen36/Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M.gguf",
+      "model_sha256": "ae2fb73ac0da875640269f1e65e9c7fb415b066c6d544c3eef9adb0d03f04792",
+      "argv": [
+        "$CLI",
+        "llm",
+        "generate",
+        "/var/home/maxfridbe/models/qwen36/Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M.gguf",
+        "--prompt",
+        "Explain why the sky is blue in three short sentences.",
+        "--max",
+        "32",
+        "--temp",
+        "0",
+        "--seed",
+        "1",
+        "--gpu",
+        "0",
+        "--ctx",
+        "512"
+      ]
+    }
+  ],
+  "wrapper": {
+    "script": "reviewed run_job_long.py",
+    "timeout_seconds": 300,
+    "device_cap_bytes": 4026531840,
+    "host_reserve_bytes": 8589934592,
+    "precheck_mode": "kfd-compute",
+    "amd_device": "/sys/class/drm/card0/device",
+    "lock": "$PARENT_QUEUE_LOCK",
+    "inputs": [
+      "$LLM_DSO",
+      "$MODEL"
+    ],
+    "direct_executable": "$CLI (environment applied to wrapper/child; no nested shell or timeout)",
+    "new_output_required": true
+  },
+  "output_contract": {
+    "answer": "stdout.log, preserve exact UTF8, may be truncated at32tokens or end earlier onEOS",
+    "timing": "stderr final [prompt N tokens in PPs; G generated in TGs (R tok/s)]",
+    "prompt_tokens_per_second": "N / printedPPseconds, approximate because PPseconds roundedto0.01",
+    "generation_tokens_per_second": "Use CLI printedR (computed from unrounded elapsed). Includes sampling/outputflush and first-token sample from prefetched logits; not pureGPUkernel throughput.",
+    "time_to_first_token": "Not separately measured by existingCLI; do not label PPtime as TTFT.",
+    "success": "Wrapperexit0/groupempty +one validtimingline +nonemptyanswer +1<=generated<=32 +finitepositivetimings +memorybounds +pins unchanged. No quality/numeric oracle PASS from plausibleanswer.",
+    "tracked_cleanup": "CLIgenerate doesnotprintallocatorstats; leaveunknown, existinglifecycleproof separate."
+  },
+  "source_pins": {
+    "cli/nextrocm/src/llm.rs": "b31dce94d708389d29eae2922cb73c2d3b9ba3676cce76063844e008b02f0425",
+    "llm/qwen35/src/lib.rs": "cd361d0ef43f5e11016de820736e6cf29a93fea03a3f879bce3db8278f7513ef",
+    "llm/qwen3moe/src/lib.rs": "f9380b0740e363677cb5536fde457c84dc9ca39831504cea6728ba006542cffc",
+    "llm/stablelm/src/lib.rs": "2a3c236f122e814fd8b540c0e38b10c589ac863bd2c2d2b5f8f2fa7efc07f874"
+  },
+  "previous_plan_sha256": "202933d239f742550f32595d00f74221f09fb9dda2feb27dc73094a5d8a6546a"
+}

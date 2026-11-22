@@ -1,0 +1,17 @@
+{
+  "status": "REFERENCE_INTEGRITY_VERIFIED_READINESS_PARTIAL",
+  "readiness_sha256": "de0ce727a4c858a1448aa5caa80379a4f4c8d631e97a33a58da037dab1704178",
+  "reference_audit_path": "/var/home/maxfridbe/Dev/mycroft/nextrocm/reference/wopr-gpu-suite-v1/llm-audit/qwen3tts-original-reference/audit.json",
+  "reference_audit_sha256": "2422a0dbfccd60aea917eaff40f18e66a7822166dbccba404d8bf8679f840601",
+  "actual_reference_root": "/tmp/nextrocm-qwen3tts-oracle/outputs",
+  "reference_manifest_sha256": "3b341cd9764467ad79bc5808d09efd153d34e54efbc2bf7effcd7b2635461ed3",
+  "verified_files": 24,
+  "verified_array_values": 353776,
+  "acceptance_source_finding": "verify_outputs.py checks CPU reference completeness/hash/shape; it does not judge native errors. Published CLI reports worst error without threshold exit. No native numerical PASS inferred.",
+  "remaining": [
+    "Current full six-role asset rehash and isolated role layout pending parent.",
+    "Actual runtime free telemetry and unchanged load admission required.",
+    "Original executed runner/imported library source closure not fetched; no new CPU model job.",
+    "Original numerical acceptance threshold not established. Lifecycle assertions remain separate available contract."
+  ]
+}
