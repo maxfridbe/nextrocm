@@ -1,7 +1,6 @@
 //! This engine's own C ABI (`kernels/image/paddleocrvl/pocr.h`), bound from the image kernel library by name.
 
 use std::ffi::{c_int, c_void};
-use std::sync::OnceLock;
 
 type G = *mut c_void;
 type F = *const f32;
@@ -28,10 +27,10 @@ pub struct Api {
 }
 
 /// The table, bound once (an error when the library lacks a symbol: an older build)
-pub fn api() -> nextrocm_engine_core::Result<&'static Api> {
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+pub fn api(gpu: &nextrocm_engine_core::Gpu) -> nextrocm_engine_core::Result<&'static Api> {
+    static API: nextrocm_engine_core::bindings::PerGpu<Api> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, || {
+        let lib = nextrocm_engine_core::bindings::Library::new("paddleocrvl", gpu).map_err(|e| e.0)?;
         macro_rules! sym {
             ($name:literal) => {{
                 let p = lib.symbol($name);

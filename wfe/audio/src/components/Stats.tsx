@@ -13,6 +13,14 @@ const card = (icon: string, k: string, v: string, sub: string) => (
 
 export function Stats() {
   const info = state.info;
+  if (info?.recogniser) {
+    const t = state.transcript;
+    return <div class="stats">
+      {card("&#xf130;", "engine", state.busy ? "Transcribing" : "Idle", state.status)}
+      {card("&#xf017;", "recording", t ? mss(t.duration) : "—", t ? `transcribed in ${fmtT(t.nextsycl.took)}` : "upload a recording")}
+      {card("&#xf040;", "language", t?.language ?? "—", "reported by the model")}
+    </div>;
+  }
   const p = state.progress;
   const d = info?.defaults;
   const speech = !!info?.speech;

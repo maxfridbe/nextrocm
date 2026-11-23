@@ -56,7 +56,7 @@ impl Quant {
         if gpu.raw().is_null() {
             return Err("Inkling quant requires a real device".into());
         }
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+        let lib = nextrocm_engine_core::bindings::Library::new("inkling2", gpu).map_err(|e| e.0)?;
         let d = lib.symbol("ni2_quant_decode");
         let m = lib.symbol("ni2_quant_matvec");
         if d.is_null() || m.is_null() {

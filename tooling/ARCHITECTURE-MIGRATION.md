@@ -1,41 +1,88 @@
 # Kernel-library migration status
 
-This is infrastructure migration, not model porting or tuning. Model architecture
-names and HIP target profiles are different dimensions. `gfx803`/`gfx1035`
-select code objects and wave-dependent build definitions; an engine architecture
-selects its own library. No per-card silo filename or invented tuned variant is
-introduced.
+This is infrastructure migration, not model porting or tuning. HIP target
+profiles (`gfx803`/`gfx1035`) and model architecture libraries are separate
+choices. No per-card library filename or invented tuned variant is introduced.
 
-| Existing source family | Current packaging / next boundary |
+The manifest now declares 18 default architecture libraries. Identical source
+and ordered compiler flags reuse one object across kind libraries, architecture
+libraries and the compatibility runtime. Each architecture library has an
+explicit export map, binds its own internal definitions with `-Bsymbolic`, and
+must pass an exact post-link dynamic-symbol check. Shared device/context and
+vision/speech utility operations remain in the runtime; no silo creates a
+second device owner. Host bindings select a per-GPU silo and retain shared
+fallback for missing operations.
+
+| Architecture | Default source closure |
 | --- | --- |
-| StableLM | Concrete default silo: unchanged `stablelm.hip`, seven explicitly exported `nslm_*` operations, per-GPU host binding with shared fallback. GPU regression admission remains outstanding. |
-| Qwen3 MoE | One existing `qwen3moe.hip` translation unit; next migration needs an explicit export inventory and engine-owned binding before splitting it from the compatibility runtime. |
-| Qwen3.5 | `qwen35.hip`, `batch.hip`, `scalar_fast.hip` form a closure; keep all three and their flags together. Audit host bindings and actual exported operations before a silo declaration. |
-| Inkling2 | Quant dispatcher plus primitives/state/mix form a closure. Multiple historical diagnostic wrappers export the same public names: select one validated dispatcher explicitly, never glob all `.hip` files. Target capability dispatch and existing runtime receipts must remain explicit. |
-| Background removal | `image/rembg/rb.hip` depends on the shared vision operations; `image/rembg/src/ffi.rs` currently binds the shared API. Split private removal operations only, retaining the shared vision dependency. |
-| Upscaling / SD1.5 / StarVector / RigNet | Existing individual translation units are candidate boundaries, with their shared vision/speech utility dependencies retained. StarVector's current compile define is preserved, not inferred from a card name. Each host binding/export inventory is a separate migration. |
-| MiniMaxMusic3 / Qwen3TTS / VoxCPM2 / Whisper | Individual family translation units plus shared speech utilities. Do not duplicate shared `ns_*` device/context ownership into a silo. |
-| Low-VRAM audio | `ops.hip` plus bridge/canary/whisper/qwen/GGUF/BPE/WAV sources are one linked closure. Its wave-size compile definition differs by HIP target profile. Separate library work needs an explicit ABI boundary, not moving only `ops.hip`. |
-| Qwen Image / Qwen3VL encoder | Numerous separately compiled strict arithmetic wrappers and attention/linear/VAE objects. Preserve per-TU flags and avoid duplicate standalone test-wrapper definitions. This closure requires a dedicated symbol/dependency inventory before architecture extraction. |
+| stablelm | One StableLM TU, seven operations |
+| qwen35 | Main, batch and scalar-fast TUs |
+| qwen3moe | One Qwen3 MoE TU |
+| inkling2 | Quant dispatcher, primitives, state and mix; explicit target selection below |
+| rembg | Background-removal TU; shared vision utilities remain shared |
+| upscale | Upscaling TU |
+| sd15 | SD1.5 TU |
+| starvector | StarVector TU with its existing compile define |
+| rignet | RigNet TU |
+| minimaxmusic3 | MiniMaxMusic3 TU |
+| qwen3tts | Qwen3TTS TU; shared decoder utilities remain available |
+| voxcpm2 | VoxCPM2 TU |
+| whisper | Whisper private tiled operations; other shared operations retain fallback |
+| lowvram | Ops, selftest, bridge, Canary, Whisper, Qwen, GGUF, BPE and WAV closure |
+| qwen3vl | Eight explicitly selected encoder TUs with individual strict flags |
+| qwenimage21 | Nine selected packed-linear, attention, trajectory and VAE TUs |
+| paddleocrvl | Existing PaddleOCR TU, newly declared conservative compile recipe |
+| vibevoice | Existing MiniMaxMusic3 and Qwen3TTS TUs, restricted to eleven VibeVoice operations |
 
-The new kind libraries and compatibility runtime currently retain the exact
-48 translation units and ordered per-TU flags of the frozen public recipe.
-The build manifest is deliberately explicit. Building kind libraries does not
-mean every model has migrated to a silo, nor that every engine works on both
-HIP target profiles. In particular, unsupported physical-wave dispatch guards
-are not removed by packaging.
+The original 48-TU source and ordered-flag inventory remains recorded unchanged
+in `units`. PaddleOCR is explicitly separate in `additional_units`: C++17,
+`-O2`, PIC and the shared header include path, without fast-math. Its new
+packaging is compile-only until numerical gates run; it is not represented as
+part of the old recipe's validation.
 
-Next validation steps:
+For gfx803, `source_overrides` selects the previously validated Inkling
+`quant_batch32.hip` and `mix_depth_parallel.hip` closure, retaining the original
+strict flags. Its additional batch, typed/logical and baseline-depth exports
+are declared only in that profile. This preserves the selected WOPR operation
+paths rather than reverting to an unsupported physical-wave32 dispatcher.
+For gfx1035, the original public dispatcher and mix closure remain selected;
+this profile does **not** promise the newer optional batch ABI. Other unsupported
+wave guards remain intact. Profiles are build choices, not blanket hardware
+support or performance guarantees.
 
-1. CPU: source/manifest/variant-rule tests, mock HIP properties, fake-DSO
-   override/fallback tests, gate negative controls and bounded watchdog cleanup.
-2. Compile: build each supported target with its compatible HIP toolchain;
-   inspect symbols and strict arithmetic lowering where changed packaging
-   could affect link resolution. Compare all published exports.
-3. GPU, owned serialized queue only: core allocation/copy smoke, then the
-   unchanged engine's numerical/reference and lifecycle gates against its
-   original baseline. Record actual binary, device, driver/compiler and memory
-   identities. Do not mark absent baselines as passing.
-4. Admit a hardware variant only with a nonambiguous capability match, a
-   nonempty operation delta, validated engine settings and a recorded matching
-   hardware baseline. No memory-plan sizes belong in variant settings.
+CPU closure checks cover all non-shared TUs, exact source/flag reuse, duplicate
+architectures/TUs, target-specific selection and exports. Both targets have now
+built successfully with HIP 5.7.31921 / Debian Clang 17.0.6: 49 compilations,
+23 links and 18 exact export inventories each. Independent receipt inspection
+matched all 236 source hashes before/after and all compiler/linker commands.
+Compiler warnings about unsupported floating-point exceptions and existing
+ignored low-VRAM error-path synchronization results remain recorded; no
+floating-point exception support is claimed.
+
+On gfx803, all 18 libraries passed dynamic loading, reported device properties,
+a 64 KiB allocation/free with zero remaining tracked allocation, and the strict
+watchdog. Core allocation/copy/bounds/arithmetic checks also passed. The first
+properties-only probe lacked positive DRM telemetry; its incomplete watchdog
+receipt is preserved separately from the successful allocation probe.
+
+The gfx1035 build has **not been executed on matching hardware**. Required-silo
+ESRGAN passed three native fixtures (RGB, RGBA edge and tiny input), plus two
+live UI RGB/RGBA requests against the retained CPU reference. Maximum byte error
+was 1; the RGBA alpha channel matched exactly and native allocations returned to
+zero. Two live audio UI requests reproduced the retained 11-second JFK
+transcript exactly, with plaintext/JSON downloads matching and 39 served audio
+modules verified against built sources. These are compiled UI action/HTTP tests,
+not browser visual-rendering checks or general recognition accuracy evidence.
+All corresponding watchdogs completed cleanup; final device busy was zero and
+no KFD users remained. Live server exit is not an independent allocator-drop
+measurement. This is bounded packaging/core and fixed image/audio evidence,
+not numerical admission for all architecture libraries. Existing model receipts
+do not automatically validate newly linked binaries, and no performance
+baseline is fabricated from these checks.
+
+Validation proceeds with a compatible HIP compiler, exact export inspection,
+then core allocation/copy smoke and unchanged engine numerical/reference and
+lifecycle gates on the serialized GPU queue. Binary/device/driver/compiler and
+memory identities must accompany results. Missing baselines remain unvalidated.
+Hardware variants require a nonambiguous capability match, nonempty operation
+delta and recorded matching-device baseline; no variants are fabricated here.

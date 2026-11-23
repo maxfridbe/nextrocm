@@ -15,6 +15,7 @@ export function Progress() {
       </div>
     );
   }
+  const unit = state.info?.vectorize ? "token" : (state.info?.upscale ?? []).length ? "tile" : "step";
   const of = p?.of ?? 0;
   const pics = p?.pictures ?? 1;
   const frac = of ? (((p?.picture ?? 1) - 1) * of + (p?.at ?? 0)) / (pics * of) : 0;
@@ -22,8 +23,8 @@ export function Progress() {
   const stage = p?.loading
     ? "loading the model with those LoRAs"
     : p?.busy && p.at
-      ? `picture ${p.picture}/${pics} · step ${p.at}/${of}`
-      : p?.busy ? "encoding the prompt" : p?.waiting ? `waiting: ${p.waiting} ahead` : "starting";
+      ? `${unit === "step" ? `picture ${p.picture ?? 1}/${pics} · ` : ""}${unit} ${p.at}/${of}`
+      : p?.busy ? state.info?.removes_background ? "removing background" : unit === "step" ? "encoding the prompt" : "processing picture" : p?.waiting ? `waiting: ${p.waiting} ahead` : "starting";
   const secs = p?.busy ? p.seconds ?? 0 : null;
   const perStep = p?.at && secs ? secs / ((((p.picture ?? 1) - 1) * of) + p.at) : null;
   const left = perStep && of ? perStep * (pics * of - ((((p?.picture ?? 1) - 1) * of) + (p?.at ?? 0))) : null;
@@ -33,7 +34,7 @@ export function Progress() {
       <div class="stage">
         <span class="i" props={{ innerHTML: "&#xf110;" }} /> {stage}{" "}
         <span class="hint">
-          {`${pct}%${secs !== null ? ` · ${fmtT(secs)} elapsed` : ""}${perStep ? ` · ${perStep.toFixed(2)} s/step` : ""}${left ? ` · ${fmtT(left)} left` : ""}`}
+          {`${pct}%${secs !== null ? ` · ${fmtT(secs)} elapsed` : ""}${perStep ? ` · ${perStep.toFixed(2)} s/${unit}` : ""}${left ? ` · ${fmtT(left)} left` : ""}`}
         </span>
       </div>
     </div>

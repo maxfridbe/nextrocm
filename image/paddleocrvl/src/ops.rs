@@ -45,7 +45,7 @@ impl Nsd {
         // invalid geometry before launching on this GPU's stream.
         ffi::check(
             unsafe {
-                (ffi::api()?.linear)(
+                (ffi::api(&self.gpu)?.linear)(
                     self.gpu.raw(),
                     x,
                     rows as i64,
@@ -68,17 +68,17 @@ impl Nsd {
         g: &Arc<Gpu>,
         settings: crate::settings::RuntimeSettings,
     ) -> Result<Self> {
-        if settings.vision_attention_tiled && ffi::api()?.vision_tiled.is_none() {
+        if settings.vision_attention_tiled && ffi::api(g)?.vision_tiled.is_none() {
             return Err(Error("NS_POCR_VISION_TILED requires the private attention_tiled runtime symbol".into()));
         }
-        ffi::api()?;
+        ffi::api(g)?;
         Ok(Self(nextrocm_ops::kernels::Nsd::new(g)?, settings))
     }
     pub fn dequant(&self, src: P, ty: u32, n: usize, out: M, dt: Dt) -> Result<()> {
         // SAFETY: the caller owns n encoded elements and the destination span.
         ffi::check(
             unsafe {
-                (ffi::api()?.dequant)(self.gpu.raw(), src, ty as i32, n as i64, out, dt as i32)
+                (ffi::api(&self.gpu)?.dequant)(self.gpu.raw(), src, ty as i32, n as i64, out, dt as i32)
             },
             "PaddleOCR dequant",
         )
@@ -100,7 +100,7 @@ impl Nsd {
         // SAFETY: caller owns the strided rows and rows*dim interleaved cos/sin values.
         ffi::check(
             unsafe {
-                (ffi::api()?.rope)(
+                (ffi::api(&self.gpu)?.rope)(
                     self.gpu.raw(),
                     x.cast(),
                     rows as i64,
@@ -130,7 +130,7 @@ impl Nsd {
             return Err(Error("PaddleOCR attention requires F32".into()));
         }
         if self.1.vision_attention_tiled && tiled_vision_shape(rows, heads, dim, stride) {
-            let call = ffi::api()?.vision_tiled.ok_or_else(|| Error("private vision attention symbol missing".into()))?;
+            let call = ffi::api(&self.gpu)?.vision_tiled.ok_or_else(|| Error("private vision attention symbol missing".into()))?;
             // SAFETY: caller owns the F32 strided input/output spans; the private ABI
             // validates geometry, alignment, address wrap and disjoint output.
             return ffi::check(unsafe {
@@ -182,7 +182,7 @@ impl Nsd {
         // SAFETY: caller owns the Q/K/V spans and contiguous rows*heads*dim output.
         ffi::check(
             unsafe {
-                (ffi::api()?.attention)(
+                (ffi::api(&self.gpu)?.attention)(
                     self.gpu.raw(),
                     q.cast(),
                     k.cast(),

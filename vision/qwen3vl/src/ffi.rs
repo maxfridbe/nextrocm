@@ -1,6 +1,5 @@
 use nextrocm_engine_core::{Error, Result};
 use std::ffi::{c_int, c_void};
-use std::sync::OnceLock;
 type G = *mut c_void;
 type P = *const c_void;
 type F = *const f32;
@@ -45,10 +44,10 @@ pub struct Api {
     pub swiglu: unsafe extern "C" fn(G, P, c_int, i64, i64, G, c_int) -> c_int,
     pub add: unsafe extern "C" fn(G, G, c_int, i64, i64, P, c_int, *const i32, F) -> c_int,
 }
-pub fn api() -> Result<&'static Api> {
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+pub fn api(gpu: &nextrocm_engine_core::Gpu) -> Result<&'static Api> {
+    static API: nextrocm_engine_core::bindings::PerGpu<Api> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, || {
+        let lib = nextrocm_engine_core::bindings::Library::new("qwen3vl", gpu).map_err(|e| e.0)?;
         macro_rules! sym {
             ($name:literal) => {{
                 let p = lib.symbol($name);

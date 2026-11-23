@@ -95,7 +95,7 @@ impl Upscaler {
         if gpu.raw().is_null() {
             return Err(Error("upscaler needs a native HIP GPU".into()));
         }
-        ffi::api()?;
+        ffi::api(&gpu)?;
         let up = Upscaler {
             arch,
             gpu: gpu.clone(),
@@ -197,7 +197,7 @@ impl Upscaler {
         t0: Instant,
         progress: &mut dyn FnMut(Step) -> Result<()>,
     ) -> Result<DevBuf> {
-        let k = ffi::api()?;
+        let k = ffi::api(&self.gpu)?;
         let g = ffi::g(&self.gpu);
         let s = p.scale;
         let (ow, oh) = (w * s, h * s);

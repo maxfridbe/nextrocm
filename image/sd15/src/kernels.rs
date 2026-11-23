@@ -5,7 +5,7 @@
 #![allow(clippy::too_many_arguments)]
 use nextrocm_engine_core::{DevBuf, Error, Gpu, Result};
 use std::ffi::{c_char, c_void, CStr};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
@@ -106,10 +106,10 @@ struct Api {
     attention: unsafe extern "C" fn(G, P, P, P, M, Attention) -> i32,
     last_error: unsafe extern "C" fn() -> *const c_char,
 }
-fn api() -> Result<&'static Api> {
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+fn api(gpu: &nextrocm_engine_core::Gpu) -> Result<&'static Api> {
+    static API: nextrocm_engine_core::bindings::PerGpu<Api> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, || {
+        let lib = nextrocm_engine_core::bindings::Library::new("sd15", gpu).map_err(|e| e.0)?;
         macro_rules! sym {
             ($name:literal) => {{
                 let p = lib.symbol($name);
@@ -183,7 +183,8 @@ impl Kernels {
         if gpu.raw().is_null() {
             return Err(invalid("native GPU required"));
         }
-        Ok(Self { gpu, api: api()? })
+        let api = api(&gpu)?;
+        Ok(Self { gpu, api })
     }
     fn buffer(&self, b: &DevBuf, n: usize, width: usize) -> Result<()> {
         if !Arc::ptr_eq(b.gpu(), &self.gpu) {

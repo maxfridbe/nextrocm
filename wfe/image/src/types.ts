@@ -6,6 +6,8 @@ import type { Pictures } from "./gen/routes.js";
 /** A picture made, as the page keeps it (from a history entry or an answer) */
 export interface Picture {
   url: string;
+  kind?: "upscale" | "vectorize" | "cutout";
+  closed?: boolean;
   prompt: string;
   seed: number;
   steps: number;

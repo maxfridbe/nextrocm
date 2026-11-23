@@ -458,7 +458,7 @@ impl Net {
         x: DevBuf,
         shape: Shape,
     ) -> Result<(DevBuf, Shape)> {
-        let k = ffi::api()?;
+        let k = ffi::api(gpu)?;
         let gp = ffi::g(gpu);
         // storage: buffers by id, the readers left; a blob names its storage
         let mut store: Vec<Option<(DevBuf, usize)>> = Vec::new();

@@ -2,7 +2,6 @@
 //! calls on device buffers (the sizes each names are the caller's to hold; the doc of each says them).
 
 use std::ffi::{c_int, c_void};
-use std::sync::OnceLock;
 
 use nextrocm_engine_core::{DevBuf, Error, Gpu, Result};
 
@@ -23,10 +22,10 @@ struct Api {
 unsafe impl Send for Api {}
 unsafe impl Sync for Api {}
 
-fn api() -> Result<&'static Api> {
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+fn api(gpu: &nextrocm_engine_core::Gpu) -> Result<&'static Api> {
+    static API: nextrocm_engine_core::bindings::PerGpu<Api> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, || {
+        let lib = nextrocm_engine_core::bindings::Library::new("rignet", gpu).map_err(|e| e.0)?;
         macro_rules! sym {
             ($name:literal) => {{
                 let p = lib.symbol($name);
@@ -78,7 +77,7 @@ unsafe impl Sync for K {}
 impl K {
     pub fn new(gpu: &Gpu) -> Result<K> {
         Ok(K {
-            k: api()?,
+            k: api(gpu)?,
             g: gpu.raw(),
         })
     }

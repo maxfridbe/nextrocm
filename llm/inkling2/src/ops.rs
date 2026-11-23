@@ -31,7 +31,7 @@ impl Ops {
         if gpu.raw().is_null() {
             return Err("state operations require a real GPU".into());
         }
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+        let lib = nextrocm_engine_core::bindings::Library::new("inkling2", gpu).map_err(|e| e.0)?;
         macro_rules! bind {
             ($name:literal,$ty:ty) => {{
                 let p = lib.symbol($name);

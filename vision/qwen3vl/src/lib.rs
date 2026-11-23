@@ -156,7 +156,7 @@ impl Scratch {
         // SAFETY: private ABI matchesreprC; all owned buffers cover checked geometry
         // and stay live until the following stream sync/status read.
         ffi::check(
-            unsafe { (ffi::api()?.linear)(gpu.raw(), &args) },
+            unsafe { (ffi::api(gpu)?.linear)(gpu.raw(), &args) },
             "TE INT8 linear",
         )?;
         gpu.sync()?;
@@ -323,7 +323,7 @@ impl TextEncoder {
         }
         host_memory_preflight(512 * 1024 * 1024)?;
         validate_config(config)?;
-        let api = ffi::api()?; // Reject missing private symbols before any model allocation.
+        let api = ffi::api(&gpu)?; // Reject missing private symbols before any model allocation.
         if probability_first && api.attention_prob.is_none() {
             return Err(Error(
                 "requested private probability-first ABI missing".into(),
@@ -482,7 +482,7 @@ impl TextEncoder {
             return Err(Error("TE insufficient/unknown free device memory".into()));
         }
         let gpu = &self.gpu;
-        let api = ffi::api()?;
+        let api = ffi::api(gpu)?;
         let rope = if self.ordered_headnorm {
             api.ordered_rope
                 .ok_or_else(|| Error("ordered headnorm ABI missing".into()))?

@@ -77,8 +77,37 @@ int main() {
             low=[c for c in commands if str(ROOT/'kernels/audio/lowvram/ops.hip') in c]
             self.assertEqual(len(low),1);self.assertIn('-DNR_LOWVRAM_WAVE_SIZE='+str(wave),low[0])
             self.assertFalse(any('.sm' in x for c in commands for x in c))
-            strict=[c for c in commands if str(ROOT/'kernels/llm/inkling2/quant_wave32_dispatch.hip') in c]
+            quant = 'quant_batch32.hip' if target == 'gfx803' else 'quant_wave32_dispatch.hip'
+            strict=[c for c in commands if str(ROOT/'kernels/llm/inkling2'/quant) in c]
             self.assertIn('-ffp-contract=off',strict[0]); self.assertIn('-fno-unsafe-math-optimizations',strict[0])
+
+    def test_all_silo_closures_and_target_exports(self):
+        m=json.loads((ROOT/'kernels/build-manifest.json').read_text())
+        self.assertEqual(len(m['units']),48)
+        self.assertEqual(len(m['silos']),18)
+        for target in ('gfx803','gfx1035'):
+            resolved=build.selected_manifest(m,target)
+            units={u['source']:u['flags'] for u in resolved['units']}
+            covered=set()
+            for silo in resolved['silos']:
+                self.assertTrue(silo['exports'])
+                self.assertEqual(len(silo['exports']),len(set(silo['exports'])))
+                for u in silo['units']:
+                    self.assertEqual(u['flags'],units[u['source']])
+                    covered.add(u['source'])
+            self.assertEqual(covered,{u['source'] for u in resolved['units'] if u['kind']!='shared'})
+            commands=build.plan(m,target,Path('/unused'),'hipcc')
+            compiles=[c for c in commands if '-c' in c]
+            self.assertEqual(len(compiles),49) # reuse identical objects, not duplicate compilation
+            exports=next(s['exports'] for s in resolved['silos'] if s['architecture']=='inkling2')
+            self.assertEqual('ni2_quant_matvec_batch32' in exports,target=='gfx803')
+            self.assertEqual('ni2_depthmix_baseline' in exports,target=='gfx803')
+            sources=[c[c.index('-c')+1] for c in compiles]
+            self.assertEqual(any(x.endswith('/mix_depth_parallel.hip') for x in sources),target=='gfx803')
+        bad=copy.deepcopy(m);bad['silos'].append(bad['silos'][0])
+        with self.assertRaises(ValueError):build.plan(bad,'gfx803',Path('/unused'),'hipcc')
+        bad=copy.deepcopy(m);bad['silos'][0]['units']*=2
+        with self.assertRaises(ValueError):build.plan(bad,'gfx803',Path('/unused'),'hipcc')
 
     def test_duplicate_source_rejected(self):
         m=json.loads((ROOT/'kernels/build-manifest.json').read_text());m['units'].append(m['units'][0])

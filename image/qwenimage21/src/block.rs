@@ -35,7 +35,7 @@ impl Block {
         allowance: usize,
         kernel: PackedKernel,
     ) -> Result<Self> {
-        ffi::api()?.require_kernel(kernel)?;
+        ffi::api(gpu)?.require_kernel(kernel)?;
         DitPlan::validate(file)?;
         if layer >= LAYERS {
             return Err(Error("invalid DiT block index".into()));
@@ -119,7 +119,7 @@ impl Block {
         {
             return Err(Error("invalid bounded block fixture".into()));
         }
-        let api = ffi::api()?;
+        let api = ffi::api(&self.gpu)?;
         let g = &self.gpu;
         let x = DevBuf::from_f32(g, input)?;
         let cs = DevBuf::from_f32(g, rope)?;

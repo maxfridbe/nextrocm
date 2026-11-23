@@ -1,7 +1,6 @@
 //! Exact function signatures from kernels/audio/lowvram/bridge.cpp.
 use nextrocm_audio::{Error, Result};
 use std::ffi::{c_char, c_int, c_void};
-use std::sync::OnceLock;
 
 type Handle = *mut c_void;
 pub type Progress = unsafe extern "C" fn(*mut c_void, *const c_char, i64, i64) -> c_int;
@@ -27,10 +26,10 @@ pub struct Api {
     pub close: Close,
 }
 
-pub fn api() -> Result<&'static Api> {
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+pub fn api(gpu: &nextrocm_engine_core::Gpu) -> Result<&'static Api> {
+    static API: nextrocm_engine_core::bindings::PerGpu<Api> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, || {
+        let lib = nextrocm_engine_core::bindings::Library::new("lowvram", gpu).map_err(|e| e.0)?;
         let symbol = |name: &str| {
             let p = lib.symbol(name);
             if p.is_null() {

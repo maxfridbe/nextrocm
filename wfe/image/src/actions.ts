@@ -1,5 +1,5 @@
 /** What the buttons do: build the request from the form, send it, keep the results. */
-import { api } from "./api.js";
+import { api, here } from "./api.js";
 import { render, saveForm, state } from "./state.js";
 import type { ImageEditBody, ImageGenerateBody } from "./gen/routes.js";
 import type { Picture } from "./types.js";
@@ -170,7 +170,7 @@ function body(): ImageGenerateBody & Partial<ImageEditBody> {
 }
 
 export async function generate(): Promise<void> {
-  if (state.busy || !state.info || state.info.loading || state.info.vectorize || (state.info.upscale ?? []).length || !state.form.prompt.trim()) return;
+  if (state.busy || !state.info || state.info.loading || state.info.vectorize || state.info.removes_background || (state.info.upscale ?? []).length || !state.form.prompt.trim()) return;
   saveForm();
   state.busy = true;
   state.started = performance.now();
@@ -195,4 +195,91 @@ export async function generate(): Promise<void> {
   state.busy = false;
   state.started = null;
   render();
+}
+
+/** Upload one source for an upscale or SVG. Do not accept failed decodes or concurrent additions. */
+export async function uploadSource(file: File): Promise<void> {
+  if (state.busy || state.uploading) return;
+  state.error = null;
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+    state.error = "Choose a PNG, JPEG or WebP picture."; render(); return;
+  }
+  if (file.size > 64 * 1024 * 1024) {
+    state.error = "Choose a picture smaller than 64 MiB."; render(); return;
+  }
+  state.uploading = true; render();
+  try {
+    const url = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error("Could not read this picture."));
+      reader.readAsDataURL(file);
+    });
+    const [w,h] = await new Promise<[number,number]>((resolve,reject) => {
+      const image = new Image();
+      image.onload = () => resolve([image.naturalWidth,image.naturalHeight]);
+      image.onerror = () => reject(new Error("Could not decode this picture."));
+      image.src = url;
+    });
+    if (!w || !h || w*h > 40_000_000) throw new Error("Choose a picture with at most 40 million pixels.");
+    state.pictures = [{url,name:file.name,w,h}];
+    state.results = [];
+  } catch (e) { state.error = e instanceof Error ? e.message : String(e); }
+  finally {state.uploading = false; render();}
+}
+
+export function transformVariant() {
+  const variants = state.info?.upscale ?? [];
+  return variants.find(v => v.variant === state.transform.variant) ?? variants[0];
+}
+
+/** Capability-specific requests never inherit drawing prompts, sampling, or stale noise settings. */
+export async function transformPicture(): Promise<void> {
+  const info = state.info, source = state.pictures[0], f = state.transform;
+  if (!info || info.loading || state.busy || state.uploading || !source || state.pictures.length !== 1) return;
+  const variant = transformVariant();
+  if (!info.vectorize && !info.removes_background && !variant) return;
+  state.error = null;
+  try {
+    if (!info.vectorize && !info.removes_background) {
+      if (f.scale !== null && !variant?.scales.includes(f.scale)) throw new Error("Choose a scale supported by this variant.");
+      if (f.tile !== null && (!Number.isInteger(f.tile) || f.tile < 32 || f.tile > 4096)) throw new Error("Tile size must be a whole number from 32 to 4096.");
+      if ((variant?.noise.length ?? 0) && f.noise !== null && !variant?.noise.includes(f.noise)) throw new Error("Choose a supported denoise level.");
+    } else if (info.vectorize) {
+      if (f.beams !== null && (!Number.isInteger(f.beams) || f.beams < 1 || f.beams > 8)) throw new Error("Beams must be a whole number from 1 to 8.");
+      if (f.maxLength !== null && (!Number.isInteger(f.maxLength) || f.maxLength < 260 || f.maxLength > 8192)) throw new Error("Maximum length must be a whole number from 260 to 8192.");
+    }
+    state.busy = true; state.started = performance.now(); state.status = "starting"; render();
+    if (info.removes_background) {
+      const answer = await api.removeBackground({model:info.model,image:source.url,
+        response_format:info.saves ? "url" : "b64_json",mask:f.mask,post_process_mask:f.postProcess});
+      state.results = answer.data.flatMap(d => {
+        const picture: Picture = {kind:"cutout",url:d.url ? here(d.url) : d.b64_json ? `data:image/png;base64,${d.b64_json}` : "",
+          prompt:"Background removed",seed:0,steps:0,width:d.width,height:d.height,loras:[],seconds:answer.nextsycl.seconds,created:answer.created};
+        const mask = d.mask_url ? here(d.mask_url) : d.mask_b64_json ? `data:image/png;base64,${d.mask_b64_json}` : "";
+        return [picture,...(mask ? [{...picture,url:mask,prompt:"Background mask"}] : [])];
+      });
+      if (!state.results.length || state.results.some(p=>!p.url)) throw new Error("The server returned no output picture.");
+      state.status = `done in ${answer.nextsycl.seconds.toFixed(1)} s`;
+    } else if (info.vectorize) {
+      const answer = await api.vectorize({model:info.model,image:source.url,
+        ...(f.beams === null ? {} : {beams:f.beams}), ...(f.maxLength === null ? {} : {max_length:f.maxLength})});
+      if (!answer.data.length || answer.data.some(d => typeof d.svg !== "string" || !d.svg.trim())) throw new Error("The server returned no SVG output.");
+      state.results = answer.data.map(d => ({kind:"vectorize",url:`data:image/svg+xml;charset=utf-8,${encodeURIComponent(d.svg)}`,
+        prompt:`${d.tokens} SVG tokens${d.closed ? "" : " · stopped before the SVG was complete"}`,closed:d.closed,
+        seed:0,steps:0,width:source.w,height:source.h,loras:[],seconds:answer.nextsycl.seconds,wh:answer.nextsycl.wh,created:answer.created}));
+      state.status = `done in ${answer.nextsycl.seconds.toFixed(1)} s`;
+    } else if (variant) {
+      const answer = await api.upscale({model:info.model,image:source.url,variant:variant.variant,
+        response_format:info.saves ? "url" : "b64_json", ...(f.scale === null ? {} : {scale:f.scale}),
+        ...(f.tile === null ? {} : {tile:f.tile}), ...(variant.noise.length && f.noise !== null ? {noise:f.noise} : {})});
+      state.results = answer.data.map(d => ({kind:"upscale",url:d.url ? here(d.url) : d.b64_json ? `data:image/png;base64,${d.b64_json}` : "",
+        prompt:`${d.variant} · ${d.scale}×${d.noise == null ? "" : ` · noise ${d.noise}`}`,seed:0,steps:0,width:d.width,height:d.height,
+        loras:[],seconds:answer.nextsycl.seconds,wh:answer.nextsycl.wh,created:answer.created}));
+      if (!state.results.length || state.results.some(p => !p.url)) throw new Error("The server returned no output picture.");
+      state.status = `done in ${answer.nextsycl.seconds.toFixed(1)} s`;
+    }
+    await refreshHistory();
+  } catch (e) {state.error = e instanceof Error ? e.message : String(e); state.status = "failed";}
+  finally {state.busy = false; state.started = null; render();}
 }

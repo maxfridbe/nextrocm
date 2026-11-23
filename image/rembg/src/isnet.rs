@@ -61,12 +61,12 @@ pub struct IsNet {
 impl IsNet {
     pub fn load(m: &onnx::Model, gpu: &Arc<Gpu>) -> Result<IsNet> {
         Self::validate(m)?;
-        ffi::api()?;
+        ffi::api(gpu)?;
         ffi::vision()?;
         let linear_tiled = if std::env::var_os("NEXTROCM_ISNET_LINEAR").as_deref()
             != Some(std::ffi::OsStr::new("0"))
         {
-            Some(ffi::linear_tiled()?)
+            Some(ffi::linear_tiled(gpu)?)
         } else {
             None
         };
@@ -230,7 +230,7 @@ impl std::ops::Deref for Forward<'_> {
 impl Forward<'_> {
     fn conv(&self, name: &str, x: &Map, relu: bool) -> Result<Map> {
         let v = ffi::vision()?;
-        let r = ffi::api()?;
+        let r = ffi::api(&self.gpu)?;
         let c = self
             .convs
             .get(name)
@@ -361,7 +361,7 @@ impl Forward<'_> {
     }
 
     fn pool(&self, x: &Map) -> Result<Map> {
-        let r = ffi::api()?;
+        let r = ffi::api(&self.gpu)?;
         let (h, w) = (x.h.div_ceil(2), x.w.div_ceil(2));
         let out = DevBuf::f32(&self.gpu, h * w * x.c)?;
         let started = self.profile.begin(&self.gpu)?;
@@ -391,7 +391,7 @@ impl Forward<'_> {
 
     /// [a upsampled to b's size, b] along the channels
     fn up_cat(&self, a: &Map, b: &Map) -> Result<Map> {
-        let r = ffi::api()?;
+        let r = ffi::api(&self.gpu)?;
         let v = ffi::vision()?;
         let c = a.c + b.c;
         let out = DevBuf::f32(&self.gpu, b.h * b.w * c)?;
@@ -551,7 +551,7 @@ impl Forward<'_> {
         let d2 = self.rsu("stage2d", 6, &self.up_cat(&d3, &h2)?)?;
         let d1 = self.rsu("stage1d", 7, &self.up_cat(&d2, &h1)?)?;
         let s1 = self.conv("side1", &d1, false)?;
-        let r = ffi::api()?;
+        let r = ffi::api(&self.gpu)?;
         let out = DevBuf::f32(&self.gpu, SIDE * SIDE)?;
         let g = self.gpu.raw();
         let started = self.profile.begin(&self.gpu)?;

@@ -322,8 +322,8 @@ fn main() -> Result<()> {
     let stats: Stats = unsafe { std::mem::transmute(s) };
     let axpy: Axpy = unsafe { std::mem::transmute(e) };
     // Explicit1024 ABI check before any stage uploads. No oversized shared fallback.
-    ffi::api()?.require_attention(AttentionKernel::Batched1024)?;
-    ffi::api()?.require_kernel(PackedKernel::Register64)?;
+    ffi::api(&gpu)?.require_attention(AttentionKernel::Batched1024)?;
+    ffi::api(&gpu)?.require_kernel(PackedKernel::Register64)?;
     let initial = empty_snapshot(&gpu, stats)?;
     write_json(
         &out.join("gpu.json"),

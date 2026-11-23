@@ -35,7 +35,8 @@ export function Progress() {
   } else if (phase === "flow") {
     stage = `rendering the sound: step ${at}/${of}`;
   } else if (phase === "decode") stage = `decoding window ${at}/${of}`;
-  const phases = state.info?.speech ? PHASES.filter((x) => x !== "flow") : PHASES;
+  if (state.info?.recogniser) { stage = phase ? `transcribing: ${phase} ${at}/${of}` : "starting transcription"; extra = ""; }
+  const phases = state.info?.recogniser ? [phase || "listen"] : state.info?.speech ? PHASES.filter((x) => x !== "flow") : PHASES;
   const idx = phases.indexOf(phase);
   return (
     <div class="clipprog">

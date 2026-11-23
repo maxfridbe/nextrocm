@@ -286,7 +286,7 @@ impl Model {
         encoder_profile: bool,
         log: &mut dyn FnMut(String),
     ) -> Result<Model> {
-        let kernels = ffi::api()?;
+        let kernels = ffi::api(gpu)?;
         if linear_f16_tiled && kernels.linear_f16_tiled.is_none() {
             return Err(Error("NS_WHISPER_LINEAR_F16_TILED=1 requires ns_audio_whisper_linear_f16_tiled; rebuild the runtime".into()));
         }

@@ -134,7 +134,7 @@ fn load(
     } else {
         false
     };
-    let api = ffi::api()?;
+    let api = ffi::api(&gpu)?;
     let mut handle = std::ptr::null_mut();
     // SAFETY: GPU is retained, path and output slot live through this synchronous call.
     let rc = unsafe {

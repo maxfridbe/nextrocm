@@ -225,7 +225,7 @@ impl Vae {
             let out = DevBuf::new(&gpu, n * 2)?;
             // SAFETY: source and output allocations cover n F32 and F16 elements.
             ffi::check(
-                unsafe { (ffi::api()?.to_half)(gpu.raw(), src.fp(), n as i64, out.ptr()) },
+                unsafe { (ffi::api(&gpu)?.to_half)(gpu.raw(), src.fp(), n as i64, out.ptr()) },
                 "VAE weight cast",
             )?;
             nsd.wait()?;
@@ -437,7 +437,7 @@ impl Vae {
         gamma: &DevBuf,
         out: &DevBuf,
     ) -> Result<()> {
-        let k = ffi::api()?;
+        let k = ffi::api(&self.gpu)?;
         nsd.rms_norm_mod(
             x.ptr(),
             Dt::F16,
@@ -553,7 +553,7 @@ impl Vae {
     /// halves [h', w', 4] in [-1, 1] and its size
     fn up_path(&self, nsd: &Nsd, x: DevBuf, h: usize, w: usize) -> Result<(DevBuf, usize, usize)> {
         let gpu = &self.gpu;
-        let k = ffi::api()?;
+        let k = ffi::api(&self.gpu)?;
         let (mut x, mut h, mut w) = (x, h, w);
         for up in &self.ups {
             // the block's input, kept for its shortcut when it upsamples (the first resnet reads it, not a copy)
@@ -667,7 +667,7 @@ impl Vae {
             &[count],
             ffi::check(
                 unsafe {
-                    (ffi::api()?.to_float)(self.gpu.raw(), src.ptr(), count as i64, out.fp())
+                    (ffi::api(&self.gpu)?.to_float)(self.gpu.raw(), src.ptr(), count as i64, out.fp())
                 },
                 "VAE raw float capture",
             )
@@ -713,7 +713,7 @@ impl Vae {
         }
         let nsd = &self.backend;
         let gpu = &self.gpu;
-        let k = ffi::api()?;
+        let k = ffi::api(&self.gpu)?;
         let z = self.z;
         let zl: Vec<f32> = lat
             .iter()
@@ -855,7 +855,7 @@ impl Vae {
         c: usize,
     ) -> Result<DevBuf> {
         let gpu = &self.gpu;
-        let k = ffi::api()?;
+        let k = ffi::api(&self.gpu)?;
         let px = h * w;
         let n = DevBuf::new(gpu, px * c * 2)?;
         nsd.rms_norm_mod(
@@ -1041,7 +1041,7 @@ impl Vae {
             .as_ref()
             .ok_or_else(|| Error("this VAE file has no encoder (edits need it)".into()))?;
         let gpu = &self.gpu;
-        let k = ffi::api()?;
+        let k = ffi::api(&self.gpu)?;
         let mut x = {
             let xf = DevBuf::from_f32(gpu, rgba)?;
             let xh = DevBuf::new(gpu, rgba.len() * 2)?;

@@ -17,6 +17,8 @@ export interface AppState {
   pictures: Given[];
   /** an edit's size follows its pictures (the last one's aspect) */
   sizeFromPictures: boolean;
+  transform: { mask: boolean; postProcess: boolean; variant: string; scale: number | null; noise: number | null; tile: number | null; beams: number | null; maxLength: number | null };
+  uploading: boolean;
   busy: boolean;
   /** seconds since the click, while a request runs */
   started: number | null;
@@ -40,6 +42,8 @@ export const state: AppState = {
   zoom: null,
   pictures: [],
   sizeFromPictures: true,
+  transform: { mask: false, postProcess: false, variant: "", scale: null, noise: null, tile: null, beams: null, maxLength: null },
+  uploading: false,
   busy: false,
   started: null,
   status: "idle",

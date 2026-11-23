@@ -10,6 +10,7 @@ import { Progress } from "./Progress.js";
 import { Spinner } from "./Spinner.js";
 import { SongCard, Songs } from "./Songs.js";
 import { Speak } from "./Speak.js";
+import { Transcribe, TranscriptResult } from "./Transcribe.js";
 import { Stats } from "./Stats.js";
 
 function GpuPill() {
@@ -44,18 +45,19 @@ export function App() {
       {!info ? <Spinner label="Connecting to the model…" /> : null}
       <Stats />
       {state.error && !state.busy ? <pre class="err">{state.error}</pre> : null}
-      <Panel id="create" icon="&#xf040;" title="Create" hint={info?.arch ?? "connecting…"}>
-        {info?.speech ? <Speak /> : <Create />}
+      <Panel id="create" icon="&#xf040;" title={info?.recogniser ? "Transcribe" : "Create"} hint={info?.arch ?? "connecting…"}>
+        {info?.recogniser ? <Transcribe /> : info?.speech ? <Speak /> : <Create />}
       </Panel>
       <Progress />
-      {state.result
+      {info?.recogniser && state.transcript ? <Panel id="transcript" icon="&#xf040;" title="Transcript" hint={state.transcript.language}><TranscriptResult /></Panel> : null}
+      {!info?.recogniser && state.result
         ? <Panel id="result" icon="&#xf001;" title="Result" hint={state.result.prompt.slice(0, 80)}>
             <SongCard s={state.result} big={true} />
           </Panel>
         : null}
-      <Panel id="songs" icon="&#xf1da;" title={info?.speech ? "Speech" : "Songs"} hint="made here, newest first">
+      {!info?.recogniser ? <Panel id="songs" icon="&#xf1da;" title={info?.speech ? "Speech" : "Songs"} hint="made here, newest first">
         <Songs />
-      </Panel>
+      </Panel> : null}
     </div>
   );
 }

@@ -17,9 +17,13 @@ export const api = {
   info: r.info,
   progress: r.progress,
   gpu: r.gpu,
-  /** the pictures made (the other work an image server does - upscales, SVGs - has pages of its own) */
+  upscale: r.upscale,
+  vectorize: r.vectorize,
+  removeBackground: r.removeBackground,
+  /** Include the loaded model's picture work; SVG history may contain metadata only. */
   history: async (): Promise<Picture[]> =>
-    (await r.history()).data.filter((p) => !p.kind && p.url).map((p) => ({
+    (await r.history()).data.filter((p) => (!p.kind && !!p.url) || p.kind === "upscale" || p.kind === "vectorize" || p.kind === "cutout").map((p) => ({
+      kind: p.kind === "upscale" || p.kind === "vectorize" || p.kind === "cutout" ? p.kind : undefined,
       url: here(p.url ?? ""), prompt: p.prompt, seed: p.seed ?? 0, steps: p.steps ?? 0, width: p.width ?? 0, height: p.height ?? 0,
       loras: p.loras ?? [], seconds: p.seconds, wh: p.wh, pictures: p.pictures ?? undefined, created: p.created,
     })),

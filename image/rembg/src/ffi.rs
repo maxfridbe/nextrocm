@@ -61,10 +61,10 @@ macro_rules! sym {
     }};
 }
 
-pub fn api() -> Result<&'static Api> {
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+pub fn api(gpu: &nextrocm_engine_core::Gpu) -> Result<&'static Api> {
+    static API: nextrocm_engine_core::bindings::PerGpu<Api> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, || {
+        let lib = nextrocm_engine_core::bindings::Library::new("rembg", gpu).map_err(|e| e.0)?;
         Ok(Api {
             maxpool2: sym!(lib, "ns_image_rb_maxpool2"),
             resize: sym!(lib, "ns_image_rb_resize"),
@@ -81,11 +81,11 @@ pub type LinearTiled =
 
 // Resolve for the default tiled path; explicit NEXTROCM_ISNET_LINEAR=0
 // retains the original kernel without requiring the private export.
-pub fn linear_tiled() -> Result<LinearTiled> {
-    static LINEAR: OnceLock<std::result::Result<LinearTiled, String>> = OnceLock::new();
+pub fn linear_tiled(gpu: &nextrocm_engine_core::Gpu) -> Result<LinearTiled> {
+    static LINEAR: nextrocm_engine_core::bindings::PerGpu<LinearTiled> = nextrocm_engine_core::bindings::PerGpu::new();
     LINEAR
-        .get_or_init(|| {
-            let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+        .get_or_init(gpu.index, || {
+            let lib = nextrocm_engine_core::bindings::Library::new("rembg", gpu).map_err(|e| e.0)?;
             Ok(sym!(lib, "ns_image_rb_linear_tiled"))
         })
         .as_ref()

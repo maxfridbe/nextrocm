@@ -4,7 +4,6 @@
 //! another engine's crate).
 
 use std::ffi::{c_int, c_void};
-use std::sync::OnceLock;
 
 type G = *mut c_void;
 type M = *mut c_void;
@@ -21,10 +20,10 @@ pub struct Api {
 unsafe impl Send for Api {}
 unsafe impl Sync for Api {}
 
-pub fn api() -> nextrocm_engine_core::Result<&'static Api> {
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+pub fn api(gpu: &nextrocm_engine_core::Gpu) -> nextrocm_engine_core::Result<&'static Api> {
+    static API: nextrocm_engine_core::bindings::PerGpu<Api> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, || {
+        let lib = nextrocm_engine_core::bindings::Library::new("starvector", gpu).map_err(|e| e.0)?;
         let act = lib.symbol("ns_image_up_act");
         let add = lib.symbol("ns_image_up_add");
         if act.is_null() || add.is_null() {

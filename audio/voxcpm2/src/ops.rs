@@ -48,7 +48,7 @@ impl Ops {
     pub fn new(gpu: &Arc<Gpu>, options: &LoadOptions) -> Result<Ops> {
         Ok(Ops {
             gpu: gpu.clone(),
-            k: ffi::api()?,
+            k: ffi::api(gpu)?,
             profile: profile::Profile::enabled(),
             rope_bf16_cache: load_control(options, "NEXTROCM_VCP_ROPE_BF16_CACHE")?,
             linear_f16_tiled: load_control(options, "NS_VCP_LINEAR_F16_TILED")?,

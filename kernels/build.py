@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Explicit HIP translation units, preserved arithmetic flags, isolated outputs."""
+import copy
 import argparse
 import hashlib
 import json
@@ -20,29 +21,56 @@ def source(name):
         raise ValueError('missing or escaping source: ' + name)
     return p
 
+def selected_manifest(manifest, target):
+    """Resolve explicit target choices once for compilation and export checking."""
+    result = copy.deepcopy(manifest)
+    overrides = result['profiles'][target].get('source_overrides', {})
+    result['units'].extend(result.get('additional_units', []))
+    for u in result['units']:
+        u['source'] = overrides.get(u['source'], u['source'])
+    for silo in result['silos']:
+        silo['exports'] = silo.get('profile_exports', {}).get(target, silo['exports'])
+        for spec in [silo, *silo.get('variants', [])]:
+            for u in spec['units']:
+                u['source'] = overrides.get(u['source'], u['source'])
+    return result
+
 def plan(manifest, target, out, hipcc):
+    manifest = selected_manifest(manifest, target)
     profile = manifest['profiles'][target]
     commands, objects = [], {k: [] for k in ('shared',) + KINDS}
     seen = set()
+    compiled = {}
+    def compile_unit(u):
+        name = u['source']
+        flags = tuple(f.replace('{wave_size}', str(profile['wave_size'])) for f in u['flags'])
+        key = (name, flags)
+        if key not in compiled:
+            obj = out / 'objects' / (str(len(compiled)) + '-' + name.replace('/', '_') + '.o')
+            commands.append([hipcc, *flags, '--offload-arch=' + target, '-x', 'hip', '-c', str(source(name)), '-o', str(obj)])
+            compiled[key] = str(obj)
+        return compiled[key]
+
     for u in manifest['units']:
         name = u['source']; source(name)
         if name in seen or u['kind'] not in objects:
             raise ValueError('duplicate source or unknown kind: ' + name)
         seen.add(name)
-        obj = out / 'objects' / (name.replace('/', '_') + '.o')
-        flags = [f.replace('{wave_size}', str(profile['wave_size'])) for f in u['flags']]
-        commands.append([hipcc, *flags, '--offload-arch=' + target, '-x', 'hip', '-c', str(source(name)), '-o', str(obj)])
-        objects[u['kind']].append(str(obj))
+        objects[u['kind']].append(compile_unit(u))
     # Shared ABI and utility kernels stay together. All old exports also remain
     # available through the runtime compatibility library.
     for kind in KINDS:
         if objects[kind]:
             commands.append([hipcc, '--offload-arch=' + target, '-shared', *objects['shared'], *objects[kind], '-o', str(out / ('libnextrocm-' + kind + '.so'))])
     commands.append([hipcc, '--offload-arch=' + target, '-shared', *[o for v in objects.values() for o in v], '-o', str(out / 'libnextrocm-runtime.so')])
+    architectures = set()
     for silo in manifest['silos']:
         arch = silo['architecture']
         if not re.fullmatch('[a-z0-9-]+', arch):
             raise ValueError('invalid architecture name')
+        if arch in architectures:
+            raise ValueError('duplicate silo architecture')
+        architectures.add(arch)
         base_ops = set(silo['exports'])
         for variant in [None, *silo.get('variants', [])]:
             spec = silo if variant is None else variant
@@ -55,11 +83,11 @@ def plan(manifest, target, out, hipcc):
                 source(variant['manifest'])
                 suffix = '@' + variant['name']
             objs = []
-            for i, u in enumerate(spec['units']):
-                obj = out / 'objects' / f'silo-{arch}{suffix}-{i}.o'
-                flags = [f.replace('{wave_size}', str(profile['wave_size'])) for f in u['flags']]
-                commands.append([hipcc, *flags, '--offload-arch=' + target, '-x', 'hip', '-c', str(source(u['source'])), '-o', str(obj)])
-                objs.append(str(obj))
+            for u in spec['units']:
+                obj = compile_unit(u)
+                if obj in objs:
+                    raise ValueError('duplicate translation unit in silo: ' + arch)
+                objs.append(obj)
             if not objs:
                 raise ValueError('empty silo')
             commands.append([hipcc, '--offload-arch=' + target, '-shared', *objs, '-Wl,-Bsymbolic', '-Wl,--version-script=' + str(out / 'silo' / f'{arch}{suffix}.map'), '-o', str(out / 'silo' / f'libnextrocm-{arch}{suffix}.so')])
@@ -78,6 +106,7 @@ def main():
     commands = plan(m, a.target, a.out, a.hipcc)
     if not a.execute:
         print(json.dumps({'target': a.target, 'scope': m['profiles'][a.target]['scope'], 'commands': commands}, indent=2)); return
+    m = selected_manifest(m, a.target)
     # Hash all kernel/include sources, including transitive dependencies. Fresh
     # objects avoid timestamp-only cache invalidation and removed-object reuse.
     paths = sorted(p for p in (ROOT / 'kernels').rglob('*') if p.is_file() and p.suffix in ('.hip', '.h', '.hpp', '.cpp', '.inc', '.json', '.py', '.sh', '.yml'))

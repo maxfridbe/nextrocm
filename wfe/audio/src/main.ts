@@ -10,7 +10,7 @@ import type { VNode } from "../../vendor/snabbdom/vnode.js";
 import { refreshHistory, refreshVoices } from "./actions.js";
 import { api } from "./api.js";
 import { App } from "./components/App.js";
-import { onRender, render, restorePreferences, state } from "./state.js";
+import { acceptInfo, onRender, render, restorePreferences, state } from "./state.js";
 
 const patch = init([
   attributesModule, propsModule, classModule, styleModule, datasetModule, eventListenersModule,
@@ -35,7 +35,7 @@ async function pollInfo(): Promise<void> {
   try {
     const i = await api.info();
     // a busy server answers only its model's name: keep what is known
-    if (i.defaults || !state.info) state.info = i;
+    acceptInfo(i);
     state.error = null;
   } catch (e) {
     state.error = `the server does not answer (${String(e)})`;

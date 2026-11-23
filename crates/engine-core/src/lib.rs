@@ -9,6 +9,7 @@ use std::ffi::{c_char, c_void};
 use std::sync::{Arc, OnceLock};
 
 pub mod options;
+pub mod bindings;
 
 pub use nextrocm_sys::{variant, Api};
 pub use options::{At, EngineOption};

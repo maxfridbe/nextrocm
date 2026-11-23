@@ -187,7 +187,8 @@ impl Engine {
             .ok_or_else(|| Error("QwenImage21 requires HIP GPU".into()))?;
         let lib = api()?;
         let stats = lib.symbol("nr_allocation_stats");
-        let axpy = lib.symbol("nrqi_axpy_f32");
+        let engine_lib = nextrocm_engine_core::bindings::Library::new("qwenimage21", &gpu)?;
+        let axpy = engine_lib.symbol("nrqi_axpy_f32");
         if stats.is_null() || axpy.is_null() {
             return Err(Error("QwenImage21 stats/Euler ABI missing".into()));
         }
@@ -207,14 +208,14 @@ impl Engine {
             "nsd_rms_norm_mod",
             "nsd_gate_add",
         ] {
-            if lib.symbol(name).is_null() {
+            if engine_lib.symbol(name).is_null() {
                 return Err(Error(format!(
                     "QwenImage21 required VAE ABI missing: {name}"
                 )));
             }
         }
-        ffi::api()?.require_kernel(PackedKernel::ExpandedImage4096)?;
-        ffi::api()?.require_attention(AttentionKernel::Batched1024)?;
+        ffi::api(&gpu)?.require_kernel(PackedKernel::ExpandedImage4096)?;
+        ffi::api(&gpu)?.require_attention(AttentionKernel::Batched1024)?;
         // SAFETY: exact private stats/Euler ABI; library retained by engine-core.
         let mut this = Self {
             gpu,

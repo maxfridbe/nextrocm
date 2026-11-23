@@ -207,7 +207,7 @@ impl Decoder {
         let (e, qw) = (g.n_embd, g.heads * g.head);
         let qs = qw + 2 * g.kv_heads * g.head;
         // SAFETY: a size query.
-        let sc = unsafe { (ffi::api()?.attn1_scratch)(keys as i64, g.heads as i64, g.head as i64) }
+        let sc = unsafe { (ffi::api(gpu)?.attn1_scratch)(keys as i64, g.heads as i64, g.head as i64) }
             as usize;
         Ok(Work {
             cs: DevBuf::f32(gpu, t * g.head)?,
@@ -266,7 +266,7 @@ impl Decoder {
     }
 
     fn to_half(&self, x: &DevBuf, n: usize, out: &DevBuf) -> Result<()> {
-        let k = ffi::api()?;
+        let k = ffi::api(&self.gpu)?;
         // SAFETY: n floats in, n halfs out.
         ffi::check(
             unsafe { (k.to_half)(self.gpu.raw(), x.fp(), out.ptr(), n as i64) },
@@ -366,7 +366,7 @@ impl Decoder {
         first_layer: usize,
         trace_layer: Option<usize>,
     ) -> Result<Vec<f32>> {
-        let k = ffi::api()?;
+        let k = ffi::api(&self.gpu)?;
         let gpu = &self.gpu;
         let g = &self.g;
         let t = pos.len();

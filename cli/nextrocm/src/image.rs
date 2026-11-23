@@ -717,6 +717,27 @@ fn run(cfg: &Config, args: &[String], detach: bool) -> Result<(), String> {
     SERVED.launch(&ce, &a, detach)
 }
 
+/// Rebuild request-specific options instead of retaining the previous request's LoRAs.
+fn image_reload_options(
+    arch: &str,
+    base: &nextrocm_image::LoadOptions,
+    requested: &[LoraUse],
+    registered: &[Value],
+) -> Result<nextrocm_image::LoadOptions, String> {
+    if arch == "realesrgan" && !requested.is_empty() {
+        return Err("Real-ESRGAN does not take LoRAs".into());
+    }
+    let mut options = base.clone();
+    options.merge_loras = requested.to_vec();
+    for usage in requested {
+        if let Some(entry) = registered.iter().find(|entry| entry["id"] == usage.name) {
+            options.settings.extend(entry["env"].as_object().into_iter().flatten()
+                .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_owned()))));
+        }
+    }
+    Ok(options)
+}
+
 fn serve_here(
     cfg: &Config,
     m: &Value,
@@ -732,12 +753,19 @@ fn serve_here(
     let gs = gpus(args)?;
     let gpu = gs[0].clone();
     let first = options(cfg, m, args)?;
+    let registered: Vec<Value> = models::all(cfg)?.into_iter().filter(|entry| {
+        models::kind_of(entry) == "lora" && entry["arch"] == m["arch"] && entry["enabled"] != false
+    }).collect();
+    let known = registered.iter().filter_map(|entry| Some(nextrocm_serve::image::KnownLora {
+        id: entry["id"].as_str()?.to_owned(),
+        path: PathBuf::from(entry["file"].as_str()?),
+        title: entry["title"].as_str().unwrap_or("").to_owned(),
+    })).collect();
+    let initial_loras = first.merge_loras.clone();
     let loader: nextrocm_serve::image::Loader =
         Box::new(move |use_: &[LoraUse], log: &mut dyn FnMut(String)| {
-            if !use_.is_empty() {
-                return Err("Real-ESRGAN does not take LoRAs".into());
-            }
-            load_fn(&files, &gs, &first, log).map_err(|e| e.0)
+            let options = image_reload_options(&arch, &first, use_, &registered)?;
+            load_fn(&files, &gs, &options, log).map_err(|e| e.0)
         });
     let wfe = args
         .iter()
@@ -756,8 +784,8 @@ fn serve_here(
         m["id"].as_str().unwrap_or("image").to_string(),
         gpu,
         loader,
-        vec![],
-        vec![],
+        initial_loras,
+        known,
         Some(out),
         wfe,
         cors,
@@ -941,5 +969,35 @@ mod local_weight_tests {
             .unwrap_err()
             .contains("not a file"));
         assert!(files.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod image_reload_tests {
+    use super::*;
+    #[test]
+    fn reload_replaces_loras_and_does_not_leak_the_previous_preset() {
+        let lora = LoraUse { name: "preset".into(), path: "preset.safetensors".into(), scale: 0.5 };
+        let base = nextrocm_image::LoadOptions {
+            merge_loras: vec![lora.clone()],
+            settings: [("NC_SIGMAS".into(), "base".into())].into(),
+        };
+        let registered = vec![serde_json::json!({"id":"preset","env":{"NC_SIGMAS":"fast","IGNORED":7}})];
+        let selected = image_reload_options("sd15", &base, &[lora], &registered).unwrap();
+        assert_eq!(selected.merge_loras.len(), 1);
+        assert_eq!(selected.merge_loras[0].scale, 0.5);
+        assert_eq!(selected.settings["NC_SIGMAS"], "fast");
+        assert!(!selected.settings.contains_key("IGNORED"));
+        let cleared = image_reload_options("sd15", &base, &[], &registered).unwrap();
+        assert!(cleared.merge_loras.is_empty());
+        assert_eq!(cleared.settings["NC_SIGMAS"], "base");
+        assert_eq!(base.merge_loras.len(), 1);
+    }
+    #[test]
+    fn esrgan_refuses_loras_but_accepts_its_normal_empty_request() {
+        let base = nextrocm_image::LoadOptions::default();
+        let lora = LoraUse { name: "preset".into(), path: "preset.safetensors".into(), scale: 1.0 };
+        assert!(image_reload_options("realesrgan", &base, &[lora], &[]).unwrap_err().contains("does not take LoRAs"));
+        assert!(image_reload_options("realesrgan", &base, &[], &[]).is_ok());
     }
 }

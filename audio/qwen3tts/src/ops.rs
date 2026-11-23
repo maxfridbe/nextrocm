@@ -35,7 +35,7 @@ impl Ops {
     pub fn new(gpu: &Arc<Gpu>) -> Result<Ops> {
         Ok(Ops {
             gpu: gpu.clone(),
-            k: ffi::api()?,
+            k: ffi::api(gpu)?,
         })
     }
 

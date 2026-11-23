@@ -3,6 +3,7 @@
 import { jsx } from "../jsx.js";
 import { state } from "../state.js";
 import { gpuName } from "../util.js";
+import { Transform } from "./Transform.js";
 import { Create } from "./Create.js";
 import { Gallery, Results, Zoom } from "./Gallery.js";
 import { NonCommercial } from "./Licence.js";
@@ -43,10 +44,8 @@ export function App() {
       {!info ? <Spinner label="Connecting to the model…" /> : info.loading ? <Spinner label="Loading the model…" /> : null}
       <Stats />
       {state.error && !state.busy ? <pre class="err">{state.error}</pre> : null}
-      {info?.vectorize ? <pre class="err">{`${info.model} writes pictures as SVG (POST /v1/images/vectorize, image.vectorize); this page draws them (serve a drawing model)`}</pre> : null}
-      {info && (info.upscale ?? []).length ? <pre class="err">{`${info.model} enlarges pictures (POST /v1/images/upscale, image.upscale); this page draws them (serve a drawing model)`}</pre> : null}
-      <Panel id="create" icon="&#xf040;" title="Create" hint={info?.arch ?? (info?.loading ? "loading the model…" : "")}>
-        <Create />
+      <Panel id="create" icon="&#xf040;" title={info?.removes_background ? "Remove background" : info?.vectorize ? "Write SVG" : (info?.upscale ?? []).length ? "Upscale" : "Create"} hint={info?.arch ?? (info?.loading ? "loading the model…" : "")}>
+        {info?.removes_background || info?.vectorize || (info?.upscale ?? []).length ? <Transform /> : <Create />}
       </Panel>
       <Progress />
       {state.results.length

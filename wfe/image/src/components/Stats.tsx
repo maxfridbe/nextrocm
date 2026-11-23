@@ -15,7 +15,7 @@ export function Stats() {
   const info = state.info;
   const p = state.progress;
   // an upscaler or a vectorizer draws nothing: no steps, size or cfg to report; the sampler only where the engine has a choice of them
-  const d = info?.vectorize || (info?.upscale ?? []).length ? undefined : info?.defaults;
+  const d = info?.removes_background || info?.vectorize || (info?.upscale ?? []).length ? undefined : info?.defaults;
   const h = state.history;
   const last = h[0];
   const loaded = (info?.loras ?? []).filter((l) => l.loaded !== null);
@@ -32,7 +32,7 @@ export function Stats() {
       {info?.takes_loras === false ? null : card("&#xf0c5;", "LoRAs merged", loaded.length ? String(loaded.length) : "none",
             loaded.map((l) => `${l.id} ×${l.loaded}`).join(", ") || `${(info?.loras ?? []).length} available`)}
       {card("&#xf017;", "last picture", last ? fmtT(last.seconds) : "—",
-            last ? `${last.width}×${last.height} · ${last.steps} steps${last.wh != null ? ` · ${last.wh.toFixed(2)} Wh` : ""}` : "nothing yet")}
+            last ? `${last.width}×${last.height}${last.kind ? "" : ` · ${last.steps} steps`}${last.wh != null ? ` · ${last.wh.toFixed(2)} Wh` : ""}` : "nothing yet")}
       {card("&#xf0e7;", "pictures", `${h.length}`, wh ? `${wh.toFixed(1)} Wh in all` : "")}
     </div>
   );

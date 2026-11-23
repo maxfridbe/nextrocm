@@ -206,7 +206,7 @@ pub fn load<'g>(
         return Err(error("Qwen35 baseline does not implement MTP drafting"));
     }
     let gpu = Arc::clone(&gpus[0]);
-    let kernels = Kernels::load()?;
+    let kernels = Kernels::load(&gpu)?;
     let scalar = scalar_setting(
         std::env::var("NS_Q35_SCALAR").ok().as_deref(),
         kernels.mv_fast.is_some(),

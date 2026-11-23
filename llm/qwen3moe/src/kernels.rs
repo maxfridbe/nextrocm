@@ -13,8 +13,8 @@ pub(crate) struct Kernels {
     pub attn: unsafe extern "C" fn(P, F, F, F, P, P, i32, i32, i32, i32, F) -> i32,
 }
 impl Kernels {
-    pub fn load() -> Result<Self> {
-        let a = api()?;
+    pub fn load(gpu: &nextrocm_engine_core::Gpu) -> Result<Self> {
+        let a = nextrocm_engine_core::bindings::Library::new("qwen3moe", gpu)?;
         macro_rules! sym {
             ($s:literal) => {{
                 let p = a.symbol($s);

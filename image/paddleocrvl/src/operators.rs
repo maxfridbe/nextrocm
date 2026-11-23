@@ -59,7 +59,7 @@ pub fn run(g: &Arc<Gpu>, log: &mut dyn FnMut(String)) -> Result<usize> {
     if g.raw().is_null() {
         return Err(Error("operators require native GPU".into()));
     }
-    let api = ffi::api()?;
+    let api = ffi::api(g)?;
     let mut cases = 0;
     // Long reduction lengths used by the decoder, plus partial tiles. Inputs
     // are exactly representable in F16; the oracle is a separate scalar F64 dot.

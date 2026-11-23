@@ -15,7 +15,7 @@ Build manifests enumerate translation units and floating-point flags explicitly.
 | Area | Port | Verification | Status |
 | --- | --- | --- | --- |
 | Device/runtime | Additive HIP properties, per-kind libraries, default silo plus variant resolution | Parser/settings tests, optional ABI compatibility, loader tests | Implemented and CPU-tested |
-| Packaging | Explicit TU/flags manifest, isolated target profiles and variant deltas | Offline plan tests, source closure checks; hardware builds separately reported | CPU-tested; HIP build pending |
+| Packaging | Explicit TU/flags manifest, 18 architecture libraries and two target profiles | Both HIP builds, exact export inventories, RX 550 loading and core checks | Built for gfx803/gfx1035; execution tested on gfx803 |
 | CLI/catalog | Silo inspection, variant settings and card configuration | CLI and option precedence tests | Implemented and CPU-tested |
 | Service allocation | Answer-room session selection, per-card memory admission and one-of GPU selection | Pure selection tests and service fixtures | Implemented and CPU-tested |
 | Lifecycle | Idle-only per-card unload, active-request protection, copy ages and frontdoor idle cleanup | Busy/idle/pinned/copy fixtures | Implemented and CPU-tested |
@@ -29,9 +29,9 @@ Favicons already exist in the target applications and need no replacement. Engin
 
 ## Architecture migration boundary
 
-The loader, settings, device ABI and packaging framework are implemented. StableLM is the first concrete default silo, using its existing operations and per-GPU binding; no arithmetic changed. Other engine families continue to use their shared kind library or compatibility runtime. Their precise extraction boundaries are recorded in [the kernel migration inventory](../tooling/ARCHITECTURE-MIGRATION.md). This is not a claim that every engine has been extracted or validated on every HIP target.
+The loader, settings, device ABI and packaging framework now cover 18 default architecture libraries. Existing engine-private bindings select immutable per-device tables; shared device/context and utility operations remain shared, with a compatible fallback. The [kernel migration inventory](../tooling/ARCHITECTURE-MIGRATION.md) records every closure and the explicit target-specific Inkling source selection. No new inference arithmetic or tuned hardware variant was introduced.
 
-The local development environment has no HIP compiler or GPU test queue. New kind/silo binaries, target-specific exports and numerical hardware gates therefore remain unvalidated. Existing model receipts do not validate a newly linked binary. No tuned variant or fabricated baseline has been added.
+Both target profiles were compiled in the existing WOPR HIP 5.7 / Clang 17 environment: each compiled 49 translation units and linked 23 libraries, with exact exports checked for all 18 architecture libraries. On the RX 550, all 18 libraries loaded successfully; actual gfx803/wave64/4 GiB properties, a bounded allocation/lifetime test, and the core copy/bounds/arithmetic test passed. gfx1035 has compilation/export coverage only in this study. Existing model receipts are not treated as numerical admission of every newly linked library, and no performance baseline was fabricated.
 
 ## Using the new infrastructure
 
@@ -44,7 +44,7 @@ The local development environment has no HIP compiler or GPU test queue. New kin
 
 The service/UI ports include per-copy idle unload and ages, drive management, one-of GPU placement, per-card admission, external GPU reservations, answer-room session selection, job fingerprints and safe cancellation selectors, speech streaming, and declared markup preservation. Existing loaded workers can answer while a reservation blocks new loads.
 
-## Verification recorded on this branch
+## Initial infrastructure verification (before the engine/UI completion below)
 
 - Service suite: **185 passed**, no failures. The existing live-box sample test remains ignored; no live service was contacted.
 - CLI unit tests: **18 passed**. Architecture integration test passed, including ten offline build/gate/mock-HIP checks.
@@ -53,4 +53,56 @@ The service/UI ports include per-copy idle unload and ages, drive management, on
 - All four existing frontends compile strictly (**82 modules**); mocked clock, unload, RPC and drive-confirmation tests passed. Generated API parity passed.
 - Shell syntax and `git diff --check` passed. Existing unrelated unused-code warnings remain.
 
-Hardware/compiler combinations not executed remain unvalidated. The new library layout is ready for compatible HIP compilation and subsequent device-specific regression gates; successful CPU tests do not establish GPU numerical or performance admission. No live service, GPU power setting, model weights, or inference arithmetic was changed.
+Those initial checks established CPU behavior only. Subsequent HIP compilation and isolated hardware validation are recorded below. Deployed services, GPU power settings, model weights and inference arithmetic were not changed.
+
+## Testing UI completion and hardware checks
+
+The image page now supports the capabilities of existing registered engines:
+upload-and-upscale, background removal with an optional mask, and SVG conversion,
+alongside its original generation workflow. Results can be previewed/downloaded
+and saved image history is retained. Capability reporting drives the controls;
+model names are not used to guess supported operations. The image worker also
+preserves compatible LoRA options across loading and request-specific reloads.
+See [testing UI instructions](testing-uis.md).
+
+The updated native executable was tested with the new image kind library and
+`NS_SILO_REQUIRED=1`. Real-ESRGAN passed the original RGB, tiled RGBA and singleton
+CPU-reference gates, two native runs each, with zero tracked allocations after
+engine drop. The original thresholds remained 40 dB per channel and maximum
+error 16/255. Live compiled UI actions uploaded RGB and RGBA fixtures, downloaded
+the results and verified history. Both downloaded outputs differed from their
+CPU references by at most 1/255; alpha was exact. The actual HTTP-served 27-module
+UI was byte-identical to the compiled modules used by the action test. The test
+server exited normally, with its process group empty and sampled DRM allocation
+peaking at 218,464,256 bytes. These are application-action and module checks,
+not an automated visual-browser test or a production deployment.
+
+Final CPU verification: 603 workspace library tests passed (three existing
+ignored tests), 20 CLI tests passed, architecture integration passed, and the
+standalone PaddleOCR/Qwen3VL suites passed 17/3 tests. Five subprocess loader
+cases also ran inside the sys loader test. The original sampler fixture, missing
+from the checkout, was restored byte-for-byte from both pinned upstream sources;
+no expected values or tolerances were regenerated. Image interaction tests cover
+upscale, SVG, cutout/mask, errors, retry, downloads/history and generation parity.
+
+Remaining hardware coverage is explicit: other engines' newly linked libraries
+have build/export/loading coverage but have not all rerun their full model
+numerical suites, and no gfx1035 device execution occurred in this study.
+Background-removal and SVG UI controls have mocked contract coverage here;
+Real-ESRGAN additionally has live GPU/UI-action and independent pixel coverage.
+The initial properties-only packaging probe correctly failed the strict memory
+watchdog for having no measurable DRM allocation; its replacement added a real
+64 KiB allocation/lifetime check rather than weakening the watchdog.
+
+The audio page now exposes transcription for recognizers, including file upload,
+advertised language/word/translation controls, timed results and text/JSON
+downloads. Music and speech-generation controls remain available for their
+capabilities. Two additional mock API tests and the audio interaction suite
+passed. With the required lowvram silo, Whisper tiny.en transcribed the retained
+11-second JFK WAV through the actual compiled UI actions twice, matching the
+retained expected transcript exactly (apart from surrounding whitespace). All
+39 served audio modules matched the tested build. This is a native transcript
+regression and application-action check, not a general ASR accuracy study or
+visual-browser test. Both isolated servers exited normally and their process
+groups drained. Final device observation was automatic power policy, zero GPU
+busy and no KFD processes.

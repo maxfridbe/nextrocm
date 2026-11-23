@@ -1,7 +1,6 @@
 //! Private subset binder; deliberately does not instantiate the shared Nsd
 //! binder, which requires operations this runtime does not implement yet.
 use std::ffi::{c_int, c_void};
-use std::sync::OnceLock;
 
 use nextrocm_engine_core::{DevBuf, Error, Gpu, Result};
 
@@ -177,10 +176,10 @@ pub struct Api {
         unsafe extern "C" fn(M, P, P, P, c_int, I, I, I, I, I, I, I, M) -> c_int,
 }
 
-pub fn api() -> Result<&'static Api> {
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+pub fn api(gpu: &nextrocm_engine_core::Gpu) -> Result<&'static Api> {
+    static API: nextrocm_engine_core::bindings::PerGpu<Api> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, || {
+        let lib = nextrocm_engine_core::bindings::Library::new("qwenimage21", gpu).map_err(|e| e.0)?;
         macro_rules! symbol {
             ($name:literal) => {{
                 let p = lib.symbol($name);

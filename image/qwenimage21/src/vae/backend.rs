@@ -1,7 +1,7 @@
 //! Private VAE subset binder; no shared Nsd or cross-model exports.
 use nextrocm_engine_core::{Error, Gpu, Result};
 use std::ffi::{c_int, c_void};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 type P = *const c_void;
 type M = *mut c_void;
 type I = i64;
@@ -44,9 +44,9 @@ pub struct Api {
     ) -> c_int,
     add: unsafe extern "C" fn(M, M, c_int, I, I, P, c_int, *const i32, *const f32) -> c_int,
 }
-pub fn api() -> Result<&'static Api> {
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-    API.get_or_init(||{let lib=nextrocm_engine_core::api().map_err(|e|e.0)?;
+pub fn api(gpu: &nextrocm_engine_core::Gpu) -> Result<&'static Api> {
+    static API: nextrocm_engine_core::bindings::PerGpu<Api> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, ||{let lib=nextrocm_engine_core::bindings::Library::new("qwenimage21", gpu).map_err(|e|e.0)?;
  macro_rules! sym {($name:literal)=>{{let p=lib.symbol($name);if p.is_null(){return Err(format!("missing VAE symbol {}",$name));}
  // SAFETY: matching private vae/convert headers or existing speech.hip ABI; library stays live.
  #[allow(clippy::missing_transmute_annotations)]
@@ -73,7 +73,7 @@ pub struct Backend {
 }
 impl Backend {
     pub fn new(gpu: &Arc<Gpu>, kernel: super::ConvKernel) -> Result<Self> {
-        let a = api()?;
+        let a = api(gpu)?;
         if kernel != super::ConvKernel::Baseline && a.conv64.is_none() {
             return Err(Error("explicit VAE conv64 ABI unavailable".into()));
         }
@@ -103,7 +103,7 @@ impl Backend {
         if dt != Dt::F16 || n != 1 {
             return Err(Error("VAE convolution expects single-frame half".into()));
         }
-        let a = api()?;
+        let a = api(&self.gpu)?;
         let function = if self.kernel.uses_register64(h, w, ci, co, k) {
             a.conv64
                 .ok_or_else(|| Error("VAE conv64 ABI unavailable".into()))?
@@ -159,7 +159,7 @@ impl Backend {
             &[thw.1, thw.2, ci, co, 3, 2],
             check(
                 unsafe {
-                    (api()?.conv)(
+                    (api(&self.gpu)?.conv)(
                         self.gpu.raw(),
                         x,
                         thw.1 as I,
@@ -197,7 +197,7 @@ impl Backend {
             &[m, k, n],
             check(
                 unsafe {
-                    (api()?.linear)(
+                    (api(&self.gpu)?.linear)(
                         self.gpu.raw(),
                         x,
                         dt as c_int,
@@ -236,7 +236,7 @@ impl Backend {
             &[m, c],
             check(
                 unsafe {
-                    (api()?.rms)(
+                    (api(&self.gpu)?.rms)(
                         self.gpu.raw(),
                         x,
                         dt as c_int,
@@ -274,7 +274,7 @@ impl Backend {
             &[m, c],
             check(
                 unsafe {
-                    (api()?.add)(
+                    (api(&self.gpu)?.add)(
                         self.gpu.raw(),
                         x,
                         dt as c_int,

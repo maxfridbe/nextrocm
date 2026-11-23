@@ -1862,3 +1862,72 @@ mod spoken_tests {
         assert_eq!(spoken_spans(&words, 5.0), vec![(11.7, 13.0), (46.0, 51.2)]);
     }
 }
+
+#[cfg(test)]
+mod transcription_api_tests {
+    use super::*;
+    use nextrocm_audio::{Audio, Defaults, Recogniser, Step, Timed, TranscribeRequest, Transcript};
+
+    struct Listener;
+    impl AudioEngine for Listener {
+        fn arch(&self) -> &'static str { "test-recogniser" }
+        fn defaults(&self) -> Defaults {
+            Defaults { seconds: 1.0, max_seconds: 60.0, steps: 1, cfg: 1.0, rate: 16000 }
+        }
+        fn load_seconds(&self) -> f64 { 0.0 }
+        fn generate(&self, _: &AudioRequest, _: &mut dyn FnMut(Step) -> nextrocm_engine_core::Result<()>) -> nextrocm_engine_core::Result<Audio> {
+            panic!("transcription must not invoke sound generation")
+        }
+        fn recogniser(&self) -> Option<Recogniser> {
+            Some(Recogniser { languages: vec!["en".into(), "de".into()], words: true, translate: true })
+        }
+        fn transcribe(&self, request: &TranscribeRequest, progress: &mut dyn FnMut(Step) -> nextrocm_engine_core::Result<()>) -> nextrocm_engine_core::Result<Transcript> {
+            assert_eq!(request.rate, 16000);
+            assert_eq!(request.samples.len(), 1600);
+            assert!(request.samples.iter().all(|s| s.is_finite()));
+            progress(Step { phase: "listen", at: 1, of: 1, seconds: 0.001 })?;
+            let word = Timed { start: 0.0, end: 0.1, text: "Hello".into(), probability: Some(0.9) };
+            Ok(Transcript {
+                text: if request.translate { "Translated" } else { "Hello" }.into(),
+                language: request.language.clone().unwrap_or_else(|| "en".into()),
+                duration: 0.1, segments: vec![word.clone()],
+                words: if request.words { vec![word] } else { vec![] },
+            })
+        }
+    }
+    fn server() -> AudioServer {
+        AudioServer::new("test-listener".into(), Gpu::detached("API fixture"), Box::new(Listener), None, None, vec![]).unwrap()
+    }
+    fn recording() -> String {
+        let bytes = Audio { rate: 16000, channels: 1, samples: vec![0.0; 1600] }.wav(&[]);
+        format!("data:audio/wav;base64,{}", http::base64(&bytes))
+    }
+    #[test]
+    fn recogniser_info_and_base64_transcript_preserve_timed_results() {
+        let srv = server();
+        assert_eq!(srv.info()["recogniser"], json!({"languages":["en","de"],"words":true,"translate":true}));
+        let response = srv.transcribe(&json!({"audio":recording()})).unwrap();
+        assert_eq!(response["text"], "Hello");
+        assert_eq!(response["language"], "en");
+        assert_eq!(response["duration"], 0.1);
+        assert_eq!(response["segments"][0]["text"], "Hello");
+        assert_eq!(response["words"][0]["probability"], 0.9);
+        assert_eq!(response["nextsycl"]["seconds"], 0.1);
+        assert!(response["nextsycl"]["took"].as_f64().unwrap() >= 0.0);
+        assert_eq!(srv.progress.lock().unwrap()["busy"], false);
+        let translated = srv.transcribe(&json!({"file":recording(),"language":"de","task":"translate","words":false})).unwrap();
+        assert_eq!(translated["text"], "Translated");
+        assert_eq!(translated["words"], json!([]));
+    }
+    #[test]
+    fn invalid_and_cancelled_transcriptions_leave_server_reusable() {
+        let srv = server();
+        assert_eq!(srv.transcribe(&json!({})).unwrap_err().0, 400);
+        assert_eq!(srv.transcribe(&json!({"audio":"not base64"})).unwrap_err().0, 400);
+        assert_eq!(srv.transcribe(&json!({"model":"another","audio":recording()})).unwrap_err().0, 404);
+        srv.cancel.request(Some("cancel-before-start"), false);
+        assert_eq!(srv.transcribe(&json!({"request_id":"cancel-before-start","audio":recording()})).unwrap_err().0, 499);
+        assert_eq!(srv.transcribe(&json!({"request_id":"retry","audio":recording()})).unwrap()["text"], "Hello");
+        assert_eq!(srv.progress.lock().unwrap()["busy"], false);
+    }
+}

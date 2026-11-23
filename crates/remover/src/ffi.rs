@@ -369,11 +369,11 @@ impl Vision {
 pub type LinearTiled = unsafe extern "C" fn(G, P, P, i64, i64, i64, P, M) -> c_int;
 
 /// Private BiRefNet default; explicit NEXTROCM_BIREFNET_LINEAR=0 avoids this symbol.
-pub fn linear_tiled() -> Result<LinearTiled> {
-    static LINEAR: OnceLock<std::result::Result<LinearTiled, String>> = OnceLock::new();
+pub fn linear_tiled(gpu: &Gpu) -> Result<LinearTiled> {
+    static LINEAR: nextrocm_engine_core::bindings::PerGpu<LinearTiled> = nextrocm_engine_core::bindings::PerGpu::new();
     LINEAR
-        .get_or_init(|| {
-            let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+        .get_or_init(gpu.index, || {
+            let lib = nextrocm_engine_core::bindings::Library::new("rembg", gpu).map_err(|e| e.0)?;
             let p = lib.symbol("ns_image_rb_biref_linear_tiled");
             if p.is_null() {
                 return Err(

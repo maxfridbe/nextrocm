@@ -158,6 +158,9 @@ pub struct Info {
     /// it serves its page
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wfe: Option<bool>,
+    /// it removes image backgrounds, producing RGBA and an optional mask
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removes_background: Option<bool>,
     /// it writes pictures as SVG (a vectorizer)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vectorize: Option<bool>,

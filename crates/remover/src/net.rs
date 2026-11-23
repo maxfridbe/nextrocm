@@ -359,7 +359,7 @@ impl BiRefNet {
         let linear_tiled = if std::env::var_os("NEXTROCM_BIREFNET_LINEAR").as_deref()
             != Some(std::ffi::OsStr::new("0"))
         {
-            Some(crate::ffi::linear_tiled()?)
+            Some(crate::ffi::linear_tiled(gpu)?)
         } else {
             None
         };

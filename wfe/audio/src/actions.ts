@@ -121,6 +121,7 @@ const builtin = (v: string): boolean => (state.info?.speech?.voices ?? []).some(
 
 /** Whether the form can go: songs need a description, speech its text (and what the model needs besides). */
 export function canGo(): boolean {
+  if (state.info?.recogniser) return false;
   const f = state.form;
   const sp = state.info?.speech;
   if (!sp) return !!f.prompt.trim();

@@ -493,7 +493,7 @@ impl Model {
         Ok(Model {
             nsd,
             gpu: gpu.clone(),
-            up: crate::ffi::api().map_err(|e| Error(e.0))?,
+            up: crate::ffi::api(gpu).map_err(|e| Error(e.0))?,
             patch,
             class,
             vpos,

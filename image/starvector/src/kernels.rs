@@ -2,7 +2,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref, clippy::too_many_arguments)]
 use nextrocm_engine_core::{Error, Gpu, Result};
 use std::ffi::{c_char, c_int, c_void, CStr};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 type P = *const c_void;
 type M = *mut c_void;
 type FfnSmallM = unsafe extern "C" fn(M, P, c_int, i64, i64, P, i64, *const f32, M, c_int) -> c_int;
@@ -60,10 +60,10 @@ struct Api {
         unsafe extern "C" fn(M, P, P, P, c_int, i64, i64, i64, i64, i64, i64, i64, M) -> c_int,
     attention: unsafe extern "C" fn(M, P, P, P, c_int, i64, i64, i64, i64, M, c_int) -> c_int,
 }
-fn api() -> Result<&'static Api> {
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+fn api(gpu: &nextrocm_engine_core::Gpu) -> Result<&'static Api> {
+    static API: nextrocm_engine_core::bindings::PerGpu<Api> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, || {
+        let lib = nextrocm_engine_core::bindings::Library::new("starvector", gpu).map_err(|e| e.0)?;
         macro_rules! sym {($name:literal)=>{{
    let p=lib.symbol($name);
    if p.is_null(){return Err(format!("missing StarVector dependency {}",$name));}
@@ -134,9 +134,9 @@ impl Nsd {
     }
     /// A context on `gpu`'s own stream
     pub fn new(gpu: &Arc<Gpu>, ffn_enabled: bool) -> Result<Nsd> {
-        let k = api()?;
+        let k = api(gpu)?;
         let symbol = if ffn_enabled {
-            nextrocm_engine_core::api()?.symbol("nrsv_ffn_small_m_apply")
+            nextrocm_engine_core::bindings::Library::new("starvector", gpu)?.symbol("nrsv_ffn_small_m_apply")
         } else {
             std::ptr::null_mut()
         };

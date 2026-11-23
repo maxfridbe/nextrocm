@@ -211,7 +211,7 @@ fn main() -> Result<()> {
     )?;
     // Both choices are resolved before either model allocates weights.
     if selections.contains(&AttentionKernel::Tiled) {
-        ffi::api()?.require_attention(AttentionKernel::Tiled)?;
+        ffi::api(&gpu)?.require_attention(AttentionKernel::Tiled)?;
     }
     let result = (|| -> Result<Value> {
         let root_output = output.clone();

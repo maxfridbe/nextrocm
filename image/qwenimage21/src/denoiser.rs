@@ -11,7 +11,7 @@ use nextrocm_engine_core::{DevBuf, Error, Gpu, Result};
 use nextrocm_gguf::Gguf;
 use std::{
     ffi::c_void,
-    sync::{Arc, OnceLock},
+    sync::{Arc},
 };
 
 // Compile-time private hooks: normal builds have no event/timer calls.
@@ -138,10 +138,10 @@ struct Extra {
     to_float: unsafe extern "C" fn(*mut c_void, *const c_void, i64, *mut f32) -> i32,
     gelu: unsafe extern "C" fn(*mut c_void, *mut c_void, i32, i64, i32) -> i32,
 }
-fn extra() -> Result<&'static Extra> {
-    static API: OnceLock<std::result::Result<Extra, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+fn extra(gpu: &Gpu) -> Result<&'static Extra> {
+    static API: nextrocm_engine_core::bindings::PerGpu<Extra> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, || {
+        let lib = nextrocm_engine_core::bindings::Library::new("qwenimage21", gpu).map_err(|e| e.0)?;
         macro_rules! bind {
             ($name:literal) => {{
                 let p = lib.symbol($name);
@@ -276,9 +276,9 @@ impl Denoiser {
         if plan.with_margin>=8_000_000_000{return Err(Error("expanded aggregate budget reaches8GB".into()))}
         plan.packed_scratch=packed_scratch;
         attention.validate_image_geometry(image_rows, text_rows)?;
-        ffi::api()?.require_kernel(kernel)?;
-        ffi::api()?.require_attention(attention)?;
-        extra()?;
+        ffi::api(gpu)?.require_kernel(kernel)?;
+        ffi::api(gpu)?.require_attention(attention)?;
+        extra(gpu)?;
         let (total, free) = gpu.memory()?;
         if free.ok_or_else(|| Error("GPU free memory unavailable".into()))? < plan.with_margin {
             return Err(Error(
@@ -441,7 +441,7 @@ impl Denoiser {
         w: &Work,
         pre: Option<&DevBuf>,
     ) -> Result<()> {
-        let a = ffi::api()?;
+        let a = ffi::api(&self.gpu)?;
         let g = &self.gpu;
         let p = pre.map_or(0, |b| b.len / (3 * D * 2));
         let norm = |part: usize| -> Result<()> {
@@ -703,8 +703,8 @@ impl Denoiser {
         }
         finite(embeds)?;
         let g = &self.gpu;
-        let a = ffi::api()?;
-        let ex = extra()?;
+        let a = ffi::api(&self.gpu)?;
+        let ex = extra(&self.gpu)?;
         let e = DevBuf::from_f32(g, embeds)?;
         let norm = DevBuf::f32(g, p * D)?;
         // SAFETY: complete p*D F32 buffers and D norm weights.
@@ -842,7 +842,7 @@ impl Denoiser {
             &[n, D],
             ffi::check(
                 unsafe {
-                    (ffi::api()?.ln_mod)(
+                    (ffi::api(&self.gpu)?.ln_mod)(
                         g.raw(),
                         x.fp(),
                         n as i64,
@@ -860,7 +860,7 @@ impl Denoiser {
             "output.to_float",
             &[n, D],
             ffi::check(
-                unsafe { (extra()?.to_float)(g.raw(), xh.ptr(), (n * D) as i64, xn.fp()) },
+                unsafe { (extra(&self.gpu)?.to_float)(g.raw(), xh.ptr(), (n * D) as i64, xn.fp()) },
                 "output to float",
             )
         )?;

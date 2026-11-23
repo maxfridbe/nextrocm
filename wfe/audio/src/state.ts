@@ -2,6 +2,9 @@
 import type { Form, Gpu, Info, Progress, SavedVoice, Song } from "./types.js";
 
 export interface AppState {
+  recording: { audio: string; name: string; language: string; prompt: string; words: boolean; translate: boolean };
+  uploading: boolean;
+  transcript: import("./gen/routes.js").Transcript | null;
   info: Info | null;
   progress: Progress | null;
   gpu: Gpu | null;
@@ -23,6 +26,9 @@ export interface AppState {
 }
 
 export const state: AppState = {
+  recording: { audio: "", name: "", language: "", prompt: "", words: true, translate: false },
+  uploading: false,
+  transcript: null,
   info: null,
   progress: null,
   gpu: null,
@@ -96,4 +102,10 @@ export function restorePreferences(): void {
   state.panels = load<Record<string, boolean>>("nsaud.panels", {});
   const f = load<Partial<Form> | null>("nsaud.form", null);
   if (f) state.form = { ...state.form, ...f, options: { ...(f.options ?? {}) } };
+}
+
+/** A busy info response omits capabilities; retain them for the same model. */
+export function acceptInfo(info: Info): void {
+  if (info.busy && state.info?.model === info.model && !info.defaults && !info.recogniser && !info.speech) return;
+  state.info = info;
 }

@@ -7,7 +7,11 @@
     },
     "gfx803": {
       "wave_size": 64,
-      "scope": "Compile portability profile; each architecture requires its own numerical gate. No automatic wave32 kernel fallback."
+      "scope": "Physical wave64; select previously validated Inkling batch/depth closure, unchanged strict flags. Other architecture numerical gates remain required.",
+      "source_overrides": {
+        "kernels/llm/inkling2/quant_wave32_dispatch.hip": "kernels/llm/inkling2/quant_batch32.hip",
+        "kernels/llm/inkling2/mix.hip": "kernels/llm/inkling2/mix_depth_parallel.hip"
+      }
     }
   },
   "units": [
@@ -547,19 +551,863 @@
     {
       "architecture": "stablelm",
       "kind": "llm",
-      "scope": "Same existing source and arithmetic flags; host silo binding and GPU regression admission are separate gates.",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
       "exports": [
+        "nslm_add",
+        "nslm_attn",
         "nslm_embed",
         "nslm_mv",
         "nslm_norm",
-        "nslm_add",
-        "nslm_swiglu",
         "nslm_rope",
-        "nslm_attn"
+        "nslm_swiglu"
       ],
       "units": [
         {
           "source": "kernels/llm/stablelm/stablelm.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "qwen35",
+      "kind": "llm",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "nq35_attn",
+        "nq35_axpy",
+        "nq35_conv",
+        "nq35_delta",
+        "nq35_embed",
+        "nq35_gate",
+        "nq35_gated_norm",
+        "nq35_mv",
+        "nq35_mv_batch",
+        "nq35_mv_fast",
+        "nq35_norm",
+        "nq35_qk",
+        "nq35_swiglu"
+      ],
+      "units": [
+        {
+          "source": "kernels/llm/qwen35/qwen35.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        },
+        {
+          "source": "kernels/llm/qwen35/batch.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        },
+        {
+          "source": "kernels/llm/qwen35/scalar_fast.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "qwen3moe",
+      "kind": "llm",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "nq3m_attn",
+        "nq3m_axpy",
+        "nq3m_embed",
+        "nq3m_mv",
+        "nq3m_norm",
+        "nq3m_qk",
+        "nq3m_swiglu"
+      ],
+      "units": [
+        {
+          "source": "kernels/llm/qwen3moe/qwen3moe.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "inkling2",
+      "kind": "llm",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "ni2_add",
+        "ni2_attention",
+        "ni2_axpy",
+        "ni2_clip",
+        "ni2_depthmix",
+        "ni2_gate",
+        "ni2_loop_control",
+        "ni2_quant_decode",
+        "ni2_quant_matvec",
+        "ni2_quant_matvec_scalar_baseline",
+        "ni2_quant_matvec_wave32",
+        "ni2_rms",
+        "ni2_router",
+        "ni2_scale",
+        "ni2_shortconv",
+        "ni2_situ",
+        "ni2_softcap"
+      ],
+      "units": [
+        {
+          "source": "kernels/llm/inkling2/quant_wave32_dispatch.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-Ikernels/ns",
+            "-ffp-contract=off",
+            "-fno-unsafe-math-optimizations",
+            "-fno-approx-func"
+          ]
+        },
+        {
+          "source": "kernels/llm/inkling2/primitives.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-Ikernels/ns",
+            "-ffp-contract=off",
+            "-fno-fast-math"
+          ]
+        },
+        {
+          "source": "kernels/llm/inkling2/state.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-Ikernels/ns",
+            "-ffp-contract=off"
+          ]
+        },
+        {
+          "source": "kernels/llm/inkling2/mix.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-Ikernels/ns",
+            "-ffp-contract=off",
+            "-fno-unsafe-math-optimizations",
+            "-fno-approx-func"
+          ]
+        }
+      ],
+      "variants": [],
+      "profile_exports": {
+        "gfx803": [
+          "ni2_add",
+          "ni2_attention",
+          "ni2_axpy",
+          "ni2_clip",
+          "ni2_depthmix",
+          "ni2_depthmix_baseline",
+          "ni2_gate",
+          "ni2_loop_control",
+          "ni2_quant_decode",
+          "ni2_quant_matvec",
+          "ni2_quant_matvec_batch32",
+          "ni2_quant_matvec_logical32",
+          "ni2_quant_matvec_scalar_baseline",
+          "ni2_quant_matvec_typed32",
+          "ni2_quant_matvec_wave32",
+          "ni2_rms",
+          "ni2_router",
+          "ni2_scale",
+          "ni2_shortconv",
+          "ni2_situ",
+          "ni2_softcap"
+        ]
+      }
+    },
+    {
+      "architecture": "rembg",
+      "kind": "image",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "ns_image_rb_bias_act",
+        "ns_image_rb_biref_linear_tiled",
+        "ns_image_rb_linear_tiled",
+        "ns_image_rb_maxpool2",
+        "ns_image_rb_resize",
+        "ns_image_rb_sigmoid"
+      ],
+      "units": [
+        {
+          "source": "kernels/image/rembg/rb.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "upscale",
+      "kind": "image",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "ns_image_up_act",
+        "ns_image_up_add",
+        "ns_image_up_conv",
+        "ns_image_up_copy_channels",
+        "ns_image_up_crop",
+        "ns_image_up_dense",
+        "ns_image_up_dilate",
+        "ns_image_up_mean",
+        "ns_image_up_pad",
+        "ns_image_up_pixel_shuffle",
+        "ns_image_up_post",
+        "ns_image_up_pre",
+        "ns_image_up_pre_alpha",
+        "ns_image_up_resize",
+        "ns_image_up_scale"
+      ],
+      "units": [
+        {
+          "source": "kernels/image/upscale/up.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "sd15",
+      "kind": "image",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "nrsd_activation",
+        "nrsd_add",
+        "nrsd_attention",
+        "nrsd_concat",
+        "nrsd_conv2d",
+        "nrsd_geglu",
+        "nrsd_group_norm",
+        "nrsd_layer_norm",
+        "nrsd_layout",
+        "nrsd_linear",
+        "nrsd_multiply",
+        "nrsd_time_emb",
+        "nrsd_up2"
+      ],
+      "units": [
+        {
+          "source": "kernels/image/sd15/sd15.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "starvector",
+      "kind": "image",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "nrsv_attention",
+        "nrsv_attention_causal_rows",
+        "nrsv_ffn_small_m_apply",
+        "nrsv_quick_gelu_f32"
+      ],
+      "units": [
+        {
+          "source": "kernels/image/starvector/starvector.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "rignet",
+      "kind": "model3d",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "ns_model3d_rignet_act",
+        "ns_model3d_rignet_copy_cols",
+        "ns_model3d_rignet_edge_feat",
+        "ns_model3d_rignet_relu_affine",
+        "ns_model3d_rignet_seg_max"
+      ],
+      "units": [
+        {
+          "source": "kernels/model3d/rignet/rignet.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "minimaxmusic3",
+      "kind": "audio",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "ns_audio_mm3_add",
+        "ns_audio_mm3_attn",
+        "ns_audio_mm3_attn_scratch",
+        "ns_audio_mm3_bf16_to_float",
+        "ns_audio_mm3_bf16_to_half",
+        "ns_audio_mm3_blend",
+        "ns_audio_mm3_cfg_step",
+        "ns_audio_mm3_conv1d",
+        "ns_audio_mm3_conv1d_lr",
+        "ns_audio_mm3_conv_transpose1d",
+        "ns_audio_mm3_dequant_rows",
+        "ns_audio_mm3_dit_in",
+        "ns_audio_mm3_embed",
+        "ns_audio_mm3_gemv",
+        "ns_audio_mm3_kv_store",
+        "ns_audio_mm3_mix",
+        "ns_audio_mm3_nearest_rows",
+        "ns_audio_mm3_qk_norm_rope",
+        "ns_audio_mm3_quant_rows",
+        "ns_audio_mm3_rope_partial",
+        "ns_audio_mm3_tanh",
+        "ns_audio_mm3_to_half",
+        "ns_audio_mm3_transpose"
+      ],
+      "units": [
+        {
+          "source": "kernels/audio/minimaxmusic3/mm3.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "qwen3tts",
+      "kind": "audio",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "ns_audio_q3t_clamp",
+        "ns_audio_q3t_dwconv",
+        "ns_audio_q3t_elu",
+        "ns_audio_q3t_rope",
+        "ns_audio_q3t_scale_add",
+        "ns_audio_q3t_silu",
+        "ns_audio_q3t_snake_beta",
+        "ns_audio_q3t_window_attn"
+      ],
+      "units": [
+        {
+          "source": "kernels/audio/qwen3tts/q3t.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "voxcpm2",
+      "kind": "audio",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "ns_audio_vcp_affine",
+        "ns_audio_vcp_attn_f32",
+        "ns_audio_vcp_conv_up_tiled",
+        "ns_audio_vcp_dwconv",
+        "ns_audio_vcp_fsq",
+        "ns_audio_vcp_kv_store_f32",
+        "ns_audio_vcp_linear_f16_tiled",
+        "ns_audio_vcp_local_attn",
+        "ns_audio_vcp_rope",
+        "ns_audio_vcp_rope_bf16_cache",
+        "ns_audio_vcp_snake"
+      ],
+      "units": [
+        {
+          "source": "kernels/audio/voxcpm2/vcp.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "whisper",
+      "kind": "audio",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "ns_audio_whisper_attention_tiled",
+        "ns_audio_whisper_linear_f16_tiled"
+      ],
+      "units": [
+        {
+          "source": "kernels/audio/whisper/whisper.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "lowvram",
+      "kind": "audio",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "nr_lowvram_selftest",
+        "ns_audio_lowvram_close",
+        "ns_audio_lowvram_info",
+        "ns_audio_lowvram_open",
+        "ns_audio_lowvram_transcribe"
+      ],
+      "units": [
+        {
+          "source": "kernels/audio/lowvram/ops.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_LOWVRAM_WAVE_SIZE={wave_size}"
+          ]
+        },
+        {
+          "source": "kernels/audio/lowvram/selftest.cpp",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        },
+        {
+          "source": "kernels/audio/lowvram/bridge.cpp",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        },
+        {
+          "source": "kernels/audio/lowvram/canary.cpp",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        },
+        {
+          "source": "kernels/audio/lowvram/whisper.cpp",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        },
+        {
+          "source": "kernels/audio/lowvram/qwen.cpp",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        },
+        {
+          "source": "kernels/audio/lowvram/gguf.cpp",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        },
+        {
+          "source": "kernels/audio/lowvram/bpe.cpp",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        },
+        {
+          "source": "kernels/audio/lowvram/wav.cpp",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "qwen3vl",
+      "kind": "image",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "nrqv_attention_divide_f32",
+        "nrqv_attention_order32_capture",
+        "nrqv_attention_order32_f32",
+        "nrqv_attention_prob_f32",
+        "nrqv_attention_source32_capture",
+        "nrqv_attention_source32_f32",
+        "nrqv_attention_tree32_f32",
+        "nrqv_int8_convrot_linear",
+        "nrqv_rms4096_strict_f32",
+        "nrqv_rms_rope_f32",
+        "nrqv_rms_rope_ordered_f32",
+        "nrqv_silu_source_capture",
+        "nrqv_silu_source_f32"
+      ],
+      "units": [
+        {
+          "source": "kernels/vision/qwen3vl/qv.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNRQV_ORDERED_STRICT_TU=1"
+          ]
+        },
+        {
+          "source": "kernels/vision/qwen3vl/qv_ordered_strict.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNRQV_ORDERED_STRICT_TU=1",
+            "-ffp-contract=off",
+            "-fno-unsafe-math-optimizations",
+            "-fno-approx-func"
+          ]
+        },
+        {
+          "source": "kernels/vision/qwen3vl/qv_rms4096_strict.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off",
+            "-fno-unsafe-math-optimizations",
+            "-fno-approx-func"
+          ]
+        },
+        {
+          "source": "kernels/vision/qwen3vl/qv_attention_divide.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC"
+          ]
+        },
+        {
+          "source": "kernels/vision/qwen3vl/qv_attention_tree32.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC"
+          ]
+        },
+        {
+          "source": "kernels/vision/qwen3vl/qv_attention_source32.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off",
+            "-fno-fast-math",
+            "-fno-unsafe-math-optimizations",
+            "-fno-approx-func",
+            "-fdenormal-fp-math=ieee"
+          ]
+        },
+        {
+          "source": "kernels/vision/qwen3vl/qv_silu_source.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off",
+            "-fno-fast-math",
+            "-fno-unsafe-math-optimizations",
+            "-fno-approx-func",
+            "-fdenormal-fp-math=ieee"
+          ]
+        },
+        {
+          "source": "kernels/vision/qwen3vl/qv_attention_order32.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off",
+            "-fno-fast-math",
+            "-fno-unsafe-math-optimizations",
+            "-fno-approx-func",
+            "-fdenormal-fp-math=ieee"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "qwenimage21",
+      "kind": "image",
+      "scope": "Existing source closure and unchanged arithmetic flags; numerical admission requires recorded target/device gates.",
+      "exports": [
+        "nrqi_aux_f32_linear",
+        "nrqi_axpy_f32",
+        "nrqi_f16_to_f32",
+        "nrqi_f32_to_f16",
+        "nrqi_gate_add_f32_f16",
+        "nrqi_image_attention_1024",
+        "nrqi_image_attention_batched",
+        "nrqi_image_attention_tiled",
+        "nrqi_ln_mod",
+        "nrqi_packed_linear",
+        "nrqi_packed_linear128",
+        "nrqi_packed_linear64",
+        "nrqi_packed_linear_expanded",
+        "nrqi_rms_rope",
+        "nrqi_text_rms_f32",
+        "nrqi_vae_avg_down_add",
+        "nrqi_vae_conv",
+        "nrqi_vae_conv64",
+        "nrqi_vae_dupup_add",
+        "nrqi_vae_pad_br",
+        "nrqi_vae_rgba8",
+        "nrqi_vae_silu",
+        "nrqi_vae_softmax",
+        "nrqi_vae_up2"
+      ],
+      "units": [
+        {
+          "source": "kernels/image/qwenimage21/tests/combined_packed_expanded_runtime.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off"
+          ]
+        },
+        {
+          "source": "kernels/image/qwenimage21/tests/dit_ops_runtime.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off"
+          ]
+        },
+        {
+          "source": "kernels/image/qwenimage21/tests/aux_runtime.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off"
+          ]
+        },
+        {
+          "source": "kernels/image/qwenimage21/tests/convert_runtime.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off"
+          ]
+        },
+        {
+          "source": "kernels/image/qwenimage21/tests/trajectory_runtime.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off"
+          ]
+        },
+        {
+          "source": "kernels/image/qwenimage21/tests/attention_runtime.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off"
+          ]
+        },
+        {
+          "source": "kernels/image/qwenimage21/tests/vae_conv64_runtime.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off"
+          ]
+        },
+        {
+          "source": "kernels/image/qwenimage21/tests/attention_1024_runtime.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off"
+          ]
+        },
+        {
+          "source": "kernels/image/qwenimage21/tests/attention_batched_runtime.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-ffp-contract=off"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "paddleocrvl",
+      "kind": "image",
+      "scope": "Existing PaddleOCR TU, explicit conservative compile recipe; not part of frozen 48-TU recipe, numerical admission pending.",
+      "exports": [
+        "ns_image_pocr_attention",
+        "ns_image_pocr_attention_tiled",
+        "ns_image_pocr_attn1",
+        "ns_image_pocr_attn1_scratch",
+        "ns_image_pocr_copy_rows",
+        "ns_image_pocr_dequant",
+        "ns_image_pocr_linear",
+        "ns_image_pocr_merge2",
+        "ns_image_pocr_rope",
+        "ns_image_pocr_to_half"
+      ],
+      "units": [
+        {
+          "source": "kernels/image/paddleocrvl/pocr.hip",
+          "flags": [
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-Ikernels/ns"
+          ]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "architecture": "vibevoice",
+      "kind": "audio",
+      "scope": "Reuse existing MiniMax/QwenTTS translation units with only VibeVoice operations exported; shared utility ABI remains in runtime.",
+      "exports": [
+        "ns_audio_mm3_add",
+        "ns_audio_mm3_conv1d_lr",
+        "ns_audio_mm3_dequant_rows",
+        "ns_audio_mm3_gemv",
+        "ns_audio_mm3_quant_rows",
+        "ns_audio_mm3_to_half",
+        "ns_audio_mm3_transpose",
+        "ns_audio_q3t_dwconv",
+        "ns_audio_q3t_rope",
+        "ns_audio_q3t_scale_add",
+        "ns_audio_q3t_silu"
+      ],
+      "units": [
+        {
+          "source": "kernels/audio/minimaxmusic3/mm3.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        },
+        {
+          "source": "kernels/audio/qwen3tts/q3t.hip",
           "flags": [
             "-Ikernels/ns",
             "-std=c++17",
@@ -577,5 +1425,17 @@
     "source_recipe_sha256": "5795b3bb30ce7200a3d971e78428fea12601bb2ef529edd776198059e27c5144",
     "extraction": "Exact 48 source paths and ordered per-translation-unit flags extracted from the tracked recipe; offload target selected by profile and lowvram wave-size variable represented by {wave_size}. StableLM silo reuses its existing source flags.",
     "validation": "CPU source/plan tests only. New kind/silo HIP compilation, actual export audit and hardware numerical validation pending."
-  }
+  },
+  "additional_units": [
+    {
+      "source": "kernels/image/paddleocrvl/pocr.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-Ikernels/ns"
+      ]
+    }
+  ]
 }

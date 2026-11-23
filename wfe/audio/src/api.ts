@@ -22,6 +22,7 @@ export const song = (s: SoundItem): Song => ({
 
 export const api = {
   info: r.info,
+  transcribe: r.transcriptions,
   progress: r.progress,
   gpu: r.gpu,
   history: async (): Promise<Song[]> => (await r.history()).data.map(song),

@@ -249,7 +249,7 @@ impl Vision {
         {
             return Err(Error("invalid patch grid or values".into()));
         }
-        let k = ffi::api()?;
+        let k = ffi::api(&self.gpu)?;
         let gpu = &self.gpu;
         let (c, n) = (self.c, gh * gw);
         let hd = c / self.heads;

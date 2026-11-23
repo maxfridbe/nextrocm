@@ -572,6 +572,7 @@ impl ImageServer {
             "loras": self.loras_known.iter().map(|k| json!({"id": k.id, "title": k.title,
                 "loaded": loaded.iter().find(|l| l.name == k.id).map(|l| l.scale)})).collect::<Vec<_>>(),
             "saves": self.out_dir.is_some(), "wfe": self.wfe.is_some(),
+            "removes_background": self.engine.lock().ok().and_then(|g| g.as_ref().map(|(e, _)| e.removes_background())).unwrap_or(false),
             "vectorize": self.engine.lock().ok().and_then(|g| g.as_ref().map(|(e, _)| e.vectorizes())).unwrap_or(false),
             "upscale": self.engine.lock().ok().and_then(|g| g.as_ref().map(|(e, _)| e.upscale_variants())).unwrap_or_default().iter()
                 .map(|v| json!({"variant": v.id, "about": v.about, "scales": v.scales, "noise": v.noise})).collect::<Vec<_>>(),
@@ -1815,4 +1816,97 @@ mod file_name_tests {
         assert!(dir.join("taken.mp4").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+#[cfg(test)]
+mod transform_api_tests {
+    use super::*;
+    use nextrocm_image::{Defaults, Picture, Step, UpscaleInfo, UpscaleRequest, UpscaleVariant};
+
+    struct Transform;
+    impl ImageEngine for Transform {
+        fn arch(&self) -> &'static str { "test-transform" }
+        fn defaults(&self) -> Defaults {
+            Defaults { width: 1, height: 1, steps: 1, cfg: 1.0,
+                sampler: Sampler::ALL[0], schedule: Schedule::ALL[0], shift: 1.0 }
+        }
+        fn load_seconds(&self) -> f64 { 0.0 }
+        fn generate(&self, _: &ImageRequest, _: &mut dyn FnMut(Step) -> nextrocm_image::Result<()>) -> nextrocm_image::Result<Vec<Picture>> {
+            panic!("transform request must not call generation")
+        }
+        fn removes_background(&self) -> bool { true }
+        fn remove_background(&self, picture: &Picture, post_process: bool) -> nextrocm_image::Result<(Picture, Picture)> {
+            assert!(post_process);
+            Ok((Picture::new(picture.width, picture.height, 4), Picture::new(picture.width, picture.height, 1)))
+        }
+        fn upscale_variants(&self) -> Vec<UpscaleVariant> {
+            vec![UpscaleVariant { id: "test-4x", about: "API fixture", scales: &[4], noise: &[] }]
+        }
+        fn upscale(&self, request: &UpscaleRequest, progress: &mut dyn FnMut(Step) -> nextrocm_image::Result<()>) -> nextrocm_image::Result<(Picture, UpscaleInfo)> {
+            assert_eq!((request.picture.width, request.picture.height), (1, 1));
+            assert_eq!(request.variant.as_deref(), Some("test-4x"));
+            assert_eq!(request.scale, Some(4));
+            progress(Step { picture: 0, at: 1, of: 1, seconds: 0.01 })?;
+            Ok((Picture::new(4, 4, 3), UpscaleInfo {
+                variant: "test-4x".into(), scale: 4, noise: None, tile: 32, tiles: 1, seconds: 0.01,
+            }))
+        }
+    }
+    fn server(out: Option<PathBuf>) -> ImageServer {
+        ImageServer::new("test-upscale".into(), Gpu::detached("API fixture"),
+            Box::new(|_, _| Ok(Box::new(Transform))), vec![], vec![], out, None, vec![]).unwrap()
+    }
+    fn body() -> Value {
+        let png = Picture::new(1, 1, 3).png_bytes(&[]).unwrap();
+        json!({"image":format!("data:image/png;base64,{}", http::base64(&png)), "variant":"test-4x", "scale":4})
+    }
+    #[test]
+    fn capabilities_and_inline_upscale_work_without_a_saved_directory() {
+        let srv = server(None);
+        let info = srv.info();
+        assert_eq!(info["upscale"][0]["variant"], "test-4x");
+        assert_eq!(info["upscale"][0]["scales"], json!([4]));
+        assert_eq!(info["saves"], false);
+        assert_eq!(info["removes_background"], true);
+        let response = srv.upscale(&body(), "http://example.test").unwrap();
+        assert_eq!(response["data"][0]["width"], 4);
+        assert_eq!(response["data"][0]["height"], 4);
+        assert!(response["data"][0]["b64_json"].as_str().is_some_and(|v| !v.is_empty()));
+        assert_eq!(response["nextsycl"]["tiles"], 1);
+        assert_eq!(srv.progress.lock().unwrap()["busy"], false);
+        let mut request = body(); request["response_format"] = json!("url");
+        assert_eq!(srv.upscale(&request, "").unwrap_err().0, 400);
+        request["model"] = json!("another"); request["response_format"] = json!("b64_json");
+        assert_eq!(srv.upscale(&request, "").unwrap_err().0, 404);
+    }
+    #[test]
+    fn saved_upscale_is_downloadable_and_classified_in_history() {
+        let dir = std::env::temp_dir().join(format!("nextrocm-transform-api-{}", unique()));
+        let srv = server(Some(dir.clone()));
+        let mut request = body(); request["response_format"] = json!("url");
+        let response = srv.upscale(&request, "http://example.test/open/test-upscale").unwrap();
+        let url = response["data"][0]["url"].as_str().unwrap();
+        assert!(url.starts_with("http://example.test/open/test-upscale/v1/images/files/"));
+        let saved = dir.join(url.rsplit('/').next().unwrap());
+        assert!(saved.is_file());
+        let history = srv.history.lock().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["kind"], "upscale");
+        assert_eq!(history[0]["width"], 4);
+        drop(history); drop(srv);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn cutout_capability_routes_to_rgba_and_optional_mask() {
+        let srv = server(None);
+        let mut request = body();
+        request["mask"] = json!(true);
+        request["post_process_mask"] = json!(true);
+        let response = srv.remove_background(&request, "http://example.test").unwrap();
+        assert!(response["data"][0]["b64_json"].is_string());
+        assert!(response["data"][0]["mask_b64_json"].is_string());
+        assert_eq!(response["data"][0]["width"], 1);
+        assert_eq!(srv.progress.lock().unwrap()["busy"], false);
+    }
+
 }

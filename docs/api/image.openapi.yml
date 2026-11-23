@@ -1040,6 +1040,11 @@ components:
           - type: boolean
           - type: 'null'
           description: it serves its page
+        removes_background:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: it removes image backgrounds, producing RGBA and an optional mask
         vectorize:
           anyOf:
           - type: boolean

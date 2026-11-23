@@ -7,6 +7,7 @@ import { fmtT } from "../util.js";
 import { Spinner } from "./Spinner.js";
 
 function meta(p: Picture): string {
+  if (p.kind) return `${p.prompt} · ${p.width && p.height ? `${p.width}×${p.height} · ` : ""}${fmtT(p.seconds)}`;
   return `${p.pictures ? `edit of ${p.pictures} · ` : ""}seed ${p.seed} · ${p.steps} steps · ${p.width}×${p.height} · ${fmtT(p.seconds)}` +
     (p.loras.length ? ` · ${p.loras.join(", ")}` : "");
 }
@@ -15,15 +16,15 @@ function Card(props: { p: Picture; big: boolean }) {
   const p = props.p;
   return (
     <figure class={{ pic: true, big: props.big }}>
-      <img attrs={{ src: p.url, alt: p.prompt, loading: "lazy" }} on={{ click: () => { state.zoom = p; render(); } }} />
+      {p.url ? <img attrs={{ src: p.url, alt: p.prompt, loading: "lazy" }} on={{ click: () => { state.zoom = p; render(); } }} /> : <div class="hint">SVG history entry; download the result when it is created.</div>}
       <figcaption>
         <span class="cap" attrs={{ title: p.prompt }}>{props.big ? meta(p) : p.prompt}</span>
         <span class="acts">
-          <button type="button" class="tbtn" attrs={{ title: "use this prompt and seed again" }} on={{ click: () => reuse(p) }}>reuse</button>
+          {!p.kind ? <button type="button" class="tbtn" attrs={{ title: "use this prompt and seed again" }} on={{ click: () => reuse(p) }}>reuse</button> : null}
           {state.info?.edits
             ? <button type="button" class="tbtn" attrs={{ title: "add this picture to an edit" }} on={{ click: () => void editPicture(p) }}>edit</button>
             : null}
-          <a class="tbtn" attrs={{ href: p.url, download: p.url.split("/").pop() ?? "picture.png" }}>save</a>
+          {p.url ? <a class="tbtn" attrs={{ href: p.url, download: p.kind === "vectorize" ? "picture.svg" : p.url.startsWith("data:") ? (p.kind === "cutout" ? (p.prompt === "Background mask" ? "mask.png" : "cutout.png") : "upscaled.png") : p.url.split("/").pop() ?? "picture.png" }}>save</a> : null}
         </span>
       </figcaption>
     </figure>
@@ -37,7 +38,7 @@ export function Results() {
 
 export function Gallery() {
   if (!state.historyLoaded) return <Spinner label="Loading what was made…" />;
-  if (!state.history.length) return <div class="hint">Nothing made yet. Ctrl+Enter in the prompt generates.</div>;
+  if (!state.history.length) return <div class="hint">Nothing made yet. Submit a picture or prompt above.</div>;
   return <div class="pics small">{state.history.map((p) => <Card p={p} big={false} />)}</div>;
 }
 

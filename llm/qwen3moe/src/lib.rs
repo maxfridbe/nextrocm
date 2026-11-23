@@ -150,7 +150,7 @@ pub fn load<'g>(
         return Err(error("Qwen3Moe baseline does not implement MTP drafting"));
     }
     let gpu = Arc::clone(&gpus[0]);
-    let kernels = Kernels::load()?;
+    let kernels = Kernels::load(&gpu)?;
     let store = Store::open(f)?;
     let (weights, bytes) = weight_plan(f, &geom)?;
     // Reserve all resident weights plus scratch before the first device allocation.

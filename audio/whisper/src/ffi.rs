@@ -3,7 +3,6 @@
 //! mm3.h`), which turns the convolutions' channels-first output into the transformer's rows.
 
 use std::ffi::{c_int, c_void};
-use std::sync::OnceLock;
 
 type G = *mut c_void;
 pub type AttentionTiled = unsafe extern "C" fn(
@@ -69,10 +68,10 @@ pub struct Api {
 unsafe impl Send for Api {}
 unsafe impl Sync for Api {}
 
-pub fn api() -> nextrocm_engine_core::Result<&'static Api> {
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+pub fn api(gpu: &nextrocm_engine_core::Gpu) -> nextrocm_engine_core::Result<&'static Api> {
+    static API: nextrocm_engine_core::bindings::PerGpu<Api> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, || {
+        let lib = nextrocm_engine_core::bindings::Library::new("whisper", gpu).map_err(|e| e.0)?;
         let p = lib.symbol("ns_audio_mm3_transpose");
         if p.is_null() {
             return Err("ns_audio_mm3_transpose is not in the kernel library (the audio library, rebuilt: ./build.sh kernels)".into());

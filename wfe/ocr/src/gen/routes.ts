@@ -358,6 +358,8 @@ export interface Info {
   saves?: boolean | null;
   /** it serves its page */
   wfe?: boolean | null;
+  /** it removes image backgrounds, producing RGBA and an optional mask */
+  removes_background?: boolean | null;
   /** it writes pictures as SVG (a vectorizer) */
   vectorize?: boolean | null;
   /** an upscaler's variants (empty: it draws) */

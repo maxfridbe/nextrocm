@@ -8,7 +8,7 @@ use crate::{
 use nextrocm_engine_core::{DevBuf, Error, Gpu, Result};
 use nextrocm_gguf::Gguf;
 use std::ffi::{c_int, c_void};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc};
 
 type AuxFn = unsafe extern "C" fn(
     *mut c_void,
@@ -21,10 +21,10 @@ type AuxFn = unsafe extern "C" fn(
     *mut f32,
     i64,
 ) -> c_int;
-fn packed_api() -> Result<AuxFn> {
-    static API: OnceLock<std::result::Result<AuxFn, String>> = OnceLock::new();
-    API.get_or_init(|| {
-        let lib = nextrocm_engine_core::api().map_err(|e| e.0)?;
+fn packed_api(gpu: &Gpu) -> Result<AuxFn> {
+    static API: nextrocm_engine_core::bindings::PerGpu<AuxFn> = nextrocm_engine_core::bindings::PerGpu::new();
+    API.get_or_init(gpu.index, || {
+        let lib = nextrocm_engine_core::bindings::Library::new("qwenimage21", gpu).map_err(|e| e.0)?;
         let ptr = lib.symbol("nrqi_aux_f32_linear");
         if ptr.is_null() {
             return Err("required nrqi_aux_f32_linear is absent".into());
@@ -134,7 +134,7 @@ impl Auxiliary {
         if self.packed {
             ffi::check(
                 unsafe {
-                    packed_api()?(
+                    packed_api(gpu)?(
                         gpu.raw(),
                         x.fp(),
                         m as i64,
@@ -151,7 +151,7 @@ impl Auxiliary {
         } else {
             ffi::check(
                 unsafe {
-                    (ffi::api()?.linear)(
+                    (ffi::api(gpu)?.linear)(
                         gpu.raw(),
                         x.ptr(),
                         0,

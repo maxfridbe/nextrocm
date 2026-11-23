@@ -354,7 +354,7 @@ impl Api {
         std::env::var("NS_SILO_NAME")
             .ok()
             .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| arch.to_string())
+            .unwrap_or_else(|| canonical_silo(arch).to_string())
     }
 
     /// Where the silos and their variants are: NS_SILO_DIR, else silo/ beside the kind's library (or the executable)
@@ -664,5 +664,33 @@ mod loader_tests {
         run(Some(&new_path), "override");
         run(Some(&dir.join("missing.so")), "error");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+/// Model-card architecture aliases that share one native kernel implementation.
+/// An explicit NS_SILO_NAME still takes precedence over this built-in mapping.
+fn canonical_silo(arch: &str) -> &str {
+    match arch {
+        "qwen35moe" => "qwen35",
+        "realesrgan" | "waifu2x" => "upscale",
+        "birefnet" | "isnet" => "rembg",
+        "paddleocr-vl" | "paddleocr" => "paddleocrvl",
+        "qwen-image-2.1" => "qwenimage21",
+        "qwen3-tts" => "qwen3tts",
+        "canary" | "whisper-ggml" => "lowvram",
+        _ => arch,
+    }
+}
+#[cfg(test)]
+mod architecture_alias_tests {
+    use super::canonical_silo;
+    #[test]
+    fn card_aliases_share_the_binding_family() {
+        for (card, family) in [("qwen35moe","qwen35"),("realesrgan","upscale"),("waifu2x","upscale"),("birefnet","rembg"),("isnet","rembg"),("paddleocr-vl","paddleocrvl"),("paddleocr","paddleocrvl"),("qwen-image-2.1","qwenimage21"),("qwen3-tts","qwen3tts"),("canary","lowvram"),("whisper-ggml","lowvram")] {
+            assert_eq!(canonical_silo(card), family);
+            assert_eq!(canonical_silo(family), family);
+        }
+        assert_eq!(canonical_silo("unknown-future-engine"), "unknown-future-engine");
+        assert_eq!(canonical_silo("whisper"), "whisper");
     }
 }

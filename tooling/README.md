@@ -16,24 +16,45 @@ are recorded in the manifest's `provenance`; no private absolute path is needed.
 Build profiles select HIP code objects and wave-size compile
 definitions; they are not model-architecture silos or card-name variants.
 
-Validation so far covers CPU tests and source/flag review. HIP is unavailable
-in the current local test container, so the new kind/silo build, post-link
-export checks and GPU numerical/hardware validation are **pending**. The
-`gfx803` and `gfx1035` profile names are build configurations, not support or
-performance guarantees. The legacy recipe's earlier receipts do not validate
-the new library layout.
+Validation now includes both target builds using HIP 5.7.31921 and Debian
+Clang 17.0.6: each completed 49 unique TU compilations, 23 library links and
+18 exact architecture export checks. On gfx803, all 18 architecture libraries
+loaded successfully with `RTLD_NOW`; reported device properties, a 64 KiB
+allocation/free with tracked live memory returning to zero, and the strict
+external watchdog passed. The core allocation, copy, bounds and arithmetic
+smoke also passed. The initial properties-only probe did not satisfy positive
+DRM telemetry and remains retained as an incomplete watchdog run; the allocation
+probe supplied the missing measurement without weakening the gate.
+
+The gfx1035 result is **compile/export verification only**: no matching hardware
+was available for execution. These results do not admit all 18 models
+numerically. Required-silo ESRGAN passed three native fixtures (RGB, RGBA edge
+and tiny input) and two live UI RGB/RGBA requests against the retained CPU
+reference, with maximum byte error 1; native runs returned tracked allocation
+to zero. Two live audio UI requests reproduced the exact retained 11-second
+JFK transcript; all 39 served audio modules matched the built sources. Live
+checks exercise compiled UI actions and HTTP/download paths, not browser visual
+rendering. Watchdogs confirmed process cleanup; final device busy was zero and
+no KFD users remained. These fixed-fixture results are not general recognition
+accuracy or all-model numerical admission. The numerical/performance baseline
+catalogue remains empty rather than inventing per-device merge-gate baselines.
+Profile names are not blanket model
+support or performance guarantees.
 
 Optional `silos` entries declare an architecture, its exported operations and
 translation units. Variants declare a name, a `variant.yml` path, a nonempty
 subset of base exports and their own translation units/flags. A variant links
 only its delta, with `-Bsymbolic`; its manifest is copied beside the library.
 The Rust resolver is responsible for device matching, ambiguity rejection and
-engine-option validation. The first concrete base silo is StableLM: the same
-existing translation unit and flags, exporting exactly its seven `nslm_*`
-operations. Export maps isolate its ABI, and a post-link `nm` check requires
-actual exports to equal the declaration. The compatibility runtime still
-contains the original operations. Host binding and GPU regression admission
-remain separate gates. No tuned variants or hardware baselines are invented.
+engine-option validation. Eighteen concrete default silos now cover the existing
+architecture families; see [the closure inventory](ARCHITECTURE-MIGRATION.md).
+Export maps isolate each ABI, and post-link `nm` checks require actual exports
+to equal declarations. Identical source/flag objects are compiled once and reused.
+The original 48-unit inventory remains recorded; PaddleOCR is an explicit
+additional compile-only TU. gfx803 selects the previously validated Inkling
+batch/depth sources, with profile-specific exports; gfx1035 retains the original
+public closure. Host binding and new-layout GPU regression admission remain
+separate gates. No tuned variants or hardware baselines are invented.
 No library is named after a card or CUDA compute capability.
 
 `bash tooling/gate.sh plan BASE HEAD` produces an affected-engine plan.
