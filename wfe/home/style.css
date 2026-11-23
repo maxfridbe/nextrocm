@@ -101,3 +101,21 @@
 .spin.small{padding:4px 0;font-size:12px}.spin.small::before{width:12px;height:12px}
 @keyframes nsspin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin::before{animation-duration:2.8s}}
+
+/* Drive controls, matching the existing home palette. */
+ .drow{display:grid;grid-template-columns:18px minmax(160px,1fr) minmax(180px,280px) auto;gap:6px 12px;align-items:center;padding:8px 0;border-top:1px solid #222733}
+ .drow:first-child{border-top:0} .drow .name{font-weight:600;font-size:14px} .drow .sub{color:#6b7280;font-size:12px;overflow-wrap:anywhere} .dspace{min-width:0} .dspace .kv{margin:2px 0 0}
+ .mrow .disk{grid-column:2 / -1;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;font-size:12px;margin-top:-2px}
+ .disk .tag{margin-left:6px;font-size:10px;background:#3b2a0a;color:#fcd34d} button.slower{border-color:#b45309}
+ .movebar{background:#0f1a2a;border:1px solid #1e3a8a;border-radius:8px;padding:8px 10px;margin:0 0 8px;font-size:13px} .movebar.bad{background:#2a0f0f;border-color:#7f1d1d}
+ .mvhead{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap} .mvfile{font-size:11px;overflow-wrap:anywhere;margin-top:2px}
+ @media (max-width:640px){ .drow{grid-template-columns:18px 1fr} .drow .dspace,.drow .acts{grid-column:1 / -1} .drow .acts{justify-content:flex-start} .mrow .disk{grid-column:1 / -1} }
+
+/* a served copy's x on a card's line: unload it, only when idle (system.unload force_when_idle) */
+.procs button.unloadx{background:transparent;color:#94a3b8;border:1px solid #2f3646;border-radius:5px;padding:0 6px;font-size:13px;line-height:18px;flex:none}
+.procs button.unloadx:hover{color:#f87171;border-color:#7f1d1d} .procs button.unloadx.busy{opacity:.4} .procs button.unloadx:disabled{background:transparent}
+.procs button.unloadx .btnspin{margin:0;width:9px;height:9px}
+.procs .unloadsaid{flex:0 0 100%;padding:0 0 2px 18px;font-size:12px}
+
+.procs .timesline{flex:0 0 100%;padding:0 0 2px 18px;font-size:12px}
+.ages{font-size:12px;margin-top:3px}

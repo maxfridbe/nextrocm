@@ -30,6 +30,8 @@ export function toggleRsvp(): void {
 
 export const ui = {
   state: null as State | null,
+  stateAt: 0,
+  unloading: {} as Record<string, { said: string | null; bad: boolean } | null>,
   spec: null as Spec | null,
   error: null as string | null,
   tab: (() => { try { return localStorage.getItem("ns-tab") ?? "status"; } catch { return "status"; } })() as Tab,
@@ -89,7 +91,8 @@ function settle(): void {
 
 async function poll(): Promise<void> {
   try {
-    ui.state = await api.state();
+    ui.state = await api.state() as State;
+    ui.stateAt = Date.now();
     ui.error = null;
     settle();
   } catch (e) {
@@ -110,6 +113,23 @@ export async function loadSpec(): Promise<void> {
   render();
 }
 
+/** An /rpc failure: the envelope's error.code, its words, and whether the same call may work later */
+export class RpcFailed extends Error {
+  constructor(readonly code: string, readonly words: string, readonly retryable: boolean) {
+    super(`${code}: ${words}`);
+  }
+}
+
+/** The front door's /rpc with the page's token (the spec carries it): what the generated client calls */
+export async function rpc(method: string, body: unknown): Promise<unknown> {
+  if (!ui.spec) await loadSpec();
+  if (!ui.spec?.token) throw new Error("Unable to load the page API token; retry after the server answers.");
+  const r = await fetch(`/rpc/${method}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${ui.spec?.token ?? ""}` }, body: JSON.stringify(body) });
+  const j = (await r.json()) as { ok: boolean; result?: unknown; error?: { code: string; message: string; retryable?: boolean } };
+  if (!j.ok) throw new RpcFailed(j.error?.code ?? "internal", j.error?.message ?? `HTTP ${r.status}`, !!j.error?.retryable);
+  return j.result;
+}
+
 /** enable / disable / pin / unpin a model; its button spins until the state shows the result */
 export async function act(what: string, model: string, extra: Record<string, unknown> = {}): Promise<void> {
   ui.pending[model] = { what, since: Date.now() };
@@ -124,6 +144,13 @@ export async function act(what: string, model: string, extra: Record<string, unk
     ui.error = e instanceof Error ? e.message : String(e);
     delete ui.pending[model];
   }
+  render();
+  void poll();
+}
+
+/** Drive operations are explicit actions; opening the page never starts one. */
+export async function driveAct(body: { do: "measure" | "move" | "move_cancel"; drive?: string; model?: string }): Promise<void> {
+  try { await api.action(body); } catch (e) { ui.error = e instanceof Error ? e.message : String(e); }
   render();
   void poll();
 }
@@ -226,7 +253,19 @@ export async function copy(text: string, key: string): Promise<void> {
   setTimeout(() => { if (ui.copied === key) { ui.copied = null; render(); } }, 1500);
 }
 
+/** Seconds since the state came: what the ages it carries have run on by */
+export function since(): number {
+  return ui.stateAt ? Math.max(0, (Date.now() - ui.stateAt) / 1000) : 0;
+}
+
+/** The ages on the page count up every second between polls */
+function tick(): void {
+  if (ui.state && ui.tab === "status") render();
+  setTimeout(tick, 1000);
+}
+
 render();
 void poll();
+setTimeout(tick, 1000);
 if (ui.tab === "api") void loadSpec();
 if (ui.tab === "config") void loadConfig();

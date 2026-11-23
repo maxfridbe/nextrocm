@@ -43,6 +43,10 @@ pub struct Model {
     pub tasks: bool,
     /// pinned on the front door's page, or held by a request's rsvp_s: not unloaded for idleness
     pub pinned: bool,
+    /// Cards used by this model; empty means unknown/all cards for GPU reservations.
+    pub gpus: Vec<usize>,
+    /// True when any one listed card suffices, rather than a copy spanning every card.
+    pub one_of: bool,
 }
 
 /// The registry's enabled chat models, read on every request (an added or disabled model shows at once)
@@ -70,6 +74,8 @@ pub struct Switch {
     pub idle: Option<Duration>,
     /// maintenance mode's notice file (crate::maintenance), read on every request
     pub maintenance: Option<std::path::PathBuf>,
+    /// External GPU run reservation, checked before loading or swapping a model.
+    pub gpu_lock: Option<std::path::PathBuf>,
     swap: Mutex<()>,
     last_use: Mutex<HashMap<String, Instant>>,
     /// model id -> kept until (X-Keep-Up-S)
@@ -122,6 +128,7 @@ impl Switch {
             images: None,
             idle: None,
             maintenance: None,
+            gpu_lock: None,
             swap: Mutex::new(()),
             last_use: Mutex::new(HashMap::new()),
             keep: Mutex::new(HashMap::new()),
@@ -258,6 +265,21 @@ impl Switch {
                 return Some(err(409, format!("{oname} is loaded and in use; switching to {} would cut that conversation off. Try again in a minute, or pick {oname}.",
                                              want.title)));
             }
+        }
+        // An already-loaded model returned above: a reservation bars new loads only.
+        if let Some((file, taken)) = self
+            .gpu_lock
+            .as_deref()
+            .and_then(|file| crate::gpulock::taken(file).map(|taken| (file, taken)))
+            .filter(|(_, taken)| taken.bars(&want.gpus, !want.one_of))
+        {
+            return Some((
+                503,
+                json!({"error": {
+                    "message": crate::gpulock::message(file, &taken),
+                    "type": "cards_taken", "code": "cards_taken"
+                }}),
+            ));
         }
         if let Err(e) = self.studio(Some(&want.id)) {
             return Some(err(
@@ -496,6 +518,8 @@ mod tests {
             tools: true,
             tasks: true,
             pinned,
+            gpus: vec![],
+            one_of: false,
         };
         let models = vec![m("a", true), m("b", false)];
         assert!(super::unload_exempt(&models, "a"));
@@ -503,6 +527,94 @@ mod tests {
         assert!(!super::unload_exempt(&models, "gone"));
     }
     use super::*;
+
+    #[test]
+    fn a_gpu_reservation_blocks_loads_but_not_the_loaded_model() {
+        use std::os::fd::AsRawFd;
+        unsafe extern "C" {
+            fn flock(fd: std::os::raw::c_int, op: std::os::raw::c_int) -> std::os::raw::c_int;
+        }
+        let dir = std::env::temp_dir().join(format!("nextrocm-switch-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gpu.lock");
+        let lock = std::fs::File::create(&path).unwrap();
+        // SAFETY: the file owns this live descriptor; LOCK_EX|LOCK_NB takes only this test's private flock.
+        assert_eq!(unsafe { flock(lock.as_raw_fd(), 2 | 4) }, 0);
+        std::fs::write(
+            crate::gpulock::cards_file(&path),
+            json!({"pid":std::process::id(),"gpus":[1]}).to_string(),
+        )
+        .unwrap();
+        for (loaded, gpus, one_of, blocked) in [
+            (false, vec![1], false, true),
+            (false, vec![], false, true),
+            (false, vec![0, 1], false, true),
+            (false, vec![0, 1], true, false),
+            (false, vec![1], true, true),
+            (false, vec![0], false, false),
+            (true, vec![1], false, false),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut conn = Conn::Tcp(stream);
+                let req = http::read_request(&mut conn).unwrap();
+                assert_eq!(req.path, "/v1/models");
+                http::respond(
+                    &mut conn,
+                    200,
+                    &if loaded {
+                        json!({"data":[{"id":"wanted"}]})
+                    } else {
+                        json!({"data":[]})
+                    },
+                );
+            });
+            let want = Model {
+                id: "wanted".into(),
+                title: "Wanted".into(),
+                tools: true,
+                tasks: true,
+                pinned: false,
+                gpus,
+                one_of,
+            };
+            let listing = want.clone();
+            let mut sw = Switch::new(
+                Box::new(move || vec![listing.clone()]),
+                HashMap::new(),
+                Target::Tcp(addr.to_string()),
+                "http://127.0.0.1:1/rpc/llm.mode",
+                Duration::ZERO,
+                Duration::ZERO,
+            )
+            .unwrap();
+            // A nonexistent Unix endpoint makes any attempted load fail immediately, without a service.
+            sw.studio = (
+                Target::Unix(dir.join("absent.sock")),
+                "/rpc/llm.mode".into(),
+            );
+            sw.gpu_lock = Some(path.clone());
+            let result = sw.ensure(&want);
+            if loaded {
+                assert!(result.is_none());
+            } else {
+                let (status, body) = result.unwrap();
+                assert_eq!(status, 503);
+                assert_eq!(body["error"]["code"] == "cards_taken", blocked);
+                if !blocked {
+                    assert!(body["error"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("did not answer"));
+                }
+            }
+            server.join().unwrap();
+        }
+        drop(lock);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn the_keep_header_says_how_long() {

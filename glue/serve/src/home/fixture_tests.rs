@@ -1498,3 +1498,132 @@ fn passive_page_polls_do_not_load_or_reload_idle_models() {
     assert!(request("POST", "/open/a/v1/audio/speech").starts_with("HTTP/1.1 200"));
     assert_eq!(w.count("audio start a"), 2);
 }
+
+/// One request over https to the front door: TLS trusting only `pem` (so `localhost` is checked against its SANs),
+/// the request written, the answer read to the connection's end - which must close cleanly (close_notify)
+fn https(port: u16, pem: &[u8], req: &[u8]) -> String {
+    use rustls::pki_types::pem::PemObject;
+    let mut roots = rustls::RootCertStore::empty();
+    for c in rustls::pki_types::CertificateDer::pem_slice_iter(pem) {
+        roots.add(c.unwrap()).unwrap();
+    }
+    let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls_graviola::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let conn = rustls::ClientConnection::new(Arc::new(cfg), "localhost".try_into().unwrap()).unwrap();
+    let mut s = rustls::StreamOwned::new(conn, std::net::TcpStream::connect(("127.0.0.1", port)).unwrap());
+    s.write_all(req).unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).expect("the answer, ended by close_notify");
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The https port end to end: the certificate made beside serve.json for the configured names, the front door's same
+/// routes over TLS (a page route, the certificate, an API call with a large body), and a client that does not trust
+/// the certificate refused.
+#[test]
+fn the_https_port_serves_the_same_routes_with_its_own_certificate() {
+    let w = world("tls", vec![]);
+    w.mem.settings.lock().unwrap().insert("NS_TLS_SANS".into(), "localhost,127.0.0.1".into());
+    let (cert, key) = w.home.tls_files();
+    assert_eq!(cert, w.dir.join("tls/cert.pem"));
+    crate::tls::ensure_cert(&cert, &key, &["localhost".into(), "127.0.0.1".into()]).unwrap();
+    let cfg = crate::tls::server_config(&cert, &key).unwrap();
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let h = w.home.clone();
+    std::thread::spawn(move || h.serve_tls(l, cfg));
+    let pem = std::fs::read(&cert).unwrap();
+
+    let a = https(port, &pem, b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    assert!(a.starts_with("HTTP/1.1 200") && a.contains("\"ok\""), "{a}");
+    let a = https(port, &pem, b"GET /cert.pem HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    assert!(a.starts_with("HTTP/1.1 200") && a.ends_with(std::str::from_utf8(&pem).unwrap()), "{a}");
+    // a 24 MB body read whole over TLS before the answer (no token: the API's own refusal, in its envelope)
+    let body = vec![b'x'; 24 << 20];
+    let mut req = format!("POST /rpc/system.version HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+    req.extend_from_slice(&body);
+    let a = https(port, &pem, &req);
+    assert!(a.contains("\"ok\":false") && a.contains("Bearer"), "{}", &a[..a.len().min(400)]);
+
+    // a client that trusts something else is refused at the handshake
+    let d2 = w.dir.join("other");
+    crate::tls::ensure_cert(&d2.join("c.pem"), &d2.join("k.pem"), &["localhost".into()]).unwrap();
+    let wrong = std::fs::read(d2.join("c.pem")).unwrap();
+    let r = std::panic::catch_unwind(|| https(port, &wrong, b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+    assert!(r.is_err(), "an untrusted certificate is refused");
+}
+
+
+/// A loaded model says how long it has been loaded and how long since its last request: no request yet once loaded,
+/// now while one runs, the end of the last one after; on the model's row, its copy (instances) and the card's line;
+/// gone when it unloads
+#[test]
+fn a_loaded_model_says_since_when_and_since_its_last_request() {
+    let w = world("ages", vec![big("a")]);
+    let row = |w: &World| {
+        let rows = w.home.rpc_inner("system.models", &json!({})).unwrap();
+        rows["models"].as_array().unwrap().iter().find(|m| m["id"] == "a").cloned().unwrap()
+    };
+    assert!(row(&w)["loaded_at"].is_null() && row(&w)["instances"].as_array().unwrap().is_empty(), "not loaded: no ages");
+    let t0 = super::now();
+    let lease = w.home.ensure("a").unwrap();
+    let r = row(&w);
+    assert!(r["loaded_at"].as_f64().is_some_and(|t| t >= t0 - 1.0), "{r}");
+    assert_eq!((r["idle_s"].as_u64(), r["instances"][0]["busy"].clone(), r["instances"][0]["port"].as_u64()), (Some(0), json!(true), Some(w.audio as u64)), "a request on it: in use now: {r}");
+    drop(lease);
+    let ended = super::now();
+    std::thread::sleep(Duration::from_millis(1100));
+    let r = row(&w);
+    let last = r["last_request_at"].as_f64().unwrap();
+    assert!((last - ended).abs() < 0.5 && r["idle_s"].as_u64().is_some_and(|s| (1..=2).contains(&s)), "the last request's end: {r}");
+    assert!(r["loaded_s_ago"].as_u64().is_some_and(|s| s >= 1) && r["unload_in_s"].as_u64().is_some_and(|s| (597..=600).contains(&s)), "{r}");
+    assert_eq!(r["instances"][0]["gpu"], 0);
+    // the card's line says its copy's clocks; system.state the same row
+    let st = w.home.rpc_inner("system.state", &json!({})).unwrap();
+    let v = st["cards"][0]["vouched"].as_array().unwrap().iter().find(|v| v["model"] == "a").cloned().unwrap();
+    assert_eq!((v["loaded_at"].clone(), v["last_request_at"].clone()), (r["loaded_at"].clone(), r["last_request_at"].clone()), "{v}");
+    assert!(st["models"].as_array().unwrap().iter().any(|m| m["id"] == "a" && m["instances"][0]["idle_s"].is_number()));
+    // system.busy's slot too
+    let busy = w.home.rpc_inner("system.busy", &json!({})).unwrap();
+    assert!(busy["slots"].as_array().unwrap().iter().any(|s| s["model"] == "a" && s["loaded_at"] == r["loaded_at"]), "{busy}");
+    // a restart of the front door: the clocks come back from ages.json
+    let again = super::ages::Ages::open(Some(w.home.state_file.with_file_name("ages.json")));
+    assert_eq!(again.get(&super::ages::port_key(w.audio)).map(|a| a.last_request_at.is_some()), Some(true));
+    // unloaded: the clock goes
+    std::fs::remove_file(w.dir.join(format!("model-{}", w.audio))).unwrap();
+    std::thread::sleep(Duration::from_millis(150));
+    let r = row(&w);
+    assert!(r["loaded_at"].is_null() && w.home.ages.get(&super::ages::port_key(w.audio)).is_none(), "{r}");
+}
+
+#[test]
+fn explicit_tls_paths_are_never_replaced_on_invalid_configuration() {
+    let w=world("tls-external-invalid", vec![]);
+    let cert=w.dir.join("external.pem");let key=w.dir.join("external.key");
+    std::fs::write(&cert,b"invalid certificate sentinel").unwrap();std::fs::write(&key,b"operator-owned key sentinel").unwrap();
+    w.mem.settings.lock().unwrap().insert("NS_TLS_CERT".into(),cert.to_string_lossy().into());
+    w.mem.settings.lock().unwrap().insert("NS_TLS_KEY".into(),key.to_string_lossy().into());
+    assert!(w.home.clone().run_tls("127.0.0.1:0").is_err());
+    assert_eq!(std::fs::read(&cert).unwrap(),b"invalid certificate sentinel");assert_eq!(std::fs::read(&key).unwrap(),b"operator-owned key sentinel");
+    std::fs::remove_file(&cert).unwrap();assert!(w.home.clone().run_tls("127.0.0.1:0").is_err());
+    assert!(!cert.exists());assert_eq!(std::fs::read(&key).unwrap(),b"operator-owned key sentinel");
+}
+#[test]
+fn idle_unload_ends_hold_and_pin_but_refuses_active_lease() {
+ let w=world("idle-force",vec![big("a")]);
+ let lease=w.home.ensure("a").unwrap();
+ let e=w.home.unload_when_idle("a",Some(0)).unwrap_err();assert_eq!(e.0,409);assert_eq!(w.count("audio stop"),0);
+ drop(lease);w.home.hold_after("a",300.);
+ super::registry::update(&w.home.o.cfg,"a",|m|m["pinned"]=json!(true)).unwrap();
+ let r=w.home.unload_when_idle("a",Some(0)).unwrap();assert_eq!(r["was_loaded"],true);assert_eq!(r["unpinned"],true);assert_eq!(r["hold_ended"],true);assert_eq!(w.home.held_s("a"),0.);assert_eq!(w.entry("a")["pinned"],false);assert_eq!(w.count("audio stop"),1);
+}
+
+#[test]
+fn unknown_chat_request_telemetry_refuses_idle_unload_without_mutation(){
+ let w=world("unknown-chat-busy",vec![model("chat","llm",2.)]);std::fs::write(w.dir.join("llm-model"),"chat").unwrap();
+ w.mem.settings.lock().unwrap().insert("NS_SOCKET_DIR".into(),w.dir.join("absent-socket").to_string_lossy().into());
+ let e=w.home.unload_when_idle("chat",None).unwrap_err();assert_eq!(e.0,409);assert_eq!(w.count("llm stop"),0);assert!(e.1.starts_with("busy:"));
+}

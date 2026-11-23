@@ -134,6 +134,10 @@ fn options(
         nextrocm_engine_core::At::Load,
         k.name,
     )?);
+    // Variant defaults apply only below explicit options, environment, and model settings.
+    for line in nextrocm_engine_core::variant_settings_into(k.archs, &[], k.options, &mut settings).map_err(|e| e.0)? {
+        eprintln!("{line}");
+    }
     Ok(nextrocm_image::LoadOptions {
         merge_loras,
         settings,

@@ -27,10 +27,11 @@ impl fmt::Display for Target {
     }
 }
 
-/// A connection of either kind.
+/// A connection of any kind: TCP, a Unix socket, or TLS over TCP (the front door's https port, crate::tls).
 pub enum Conn {
     Tcp(TcpStream),
     Unix(UnixStream),
+    Tls(Box<crate::tls::TlsConn>),
 }
 
 impl Conn {
@@ -44,20 +45,27 @@ impl Conn {
         match self {
             Conn::Tcp(s) => s.set_read_timeout(d),
             Conn::Unix(s) => s.set_read_timeout(d),
+            Conn::Tls(s) => s.set_read_timeout(d),
         }
     }
     pub fn try_clone(&self) -> std::io::Result<Conn> {
         Ok(match self {
             Conn::Tcp(s) => Conn::Tcp(s.try_clone()?),
             Conn::Unix(s) => Conn::Unix(s.try_clone()?),
+            // one TLS session cannot be written from two handles, until it is pumped (a splice: crate::tls)
+            Conn::Tls(s) => Conn::Tls(Box::new(s.try_clone()?)),
         })
     }
-    /// "socket" for the control socket, "tcp" for the API port
+    /// "socket" for the control socket, "tcp" for the API port (over https too)
     pub fn kind(&self) -> &'static str {
         match self {
-            Conn::Tcp(_) => "tcp",
+            Conn::Tcp(_) | Conn::Tls(_) => "tcp",
             Conn::Unix(_) => "socket",
         }
+    }
+    /// whether it came in on the https port
+    pub fn is_tls(&self) -> bool {
+        matches!(self, Conn::Tls(_))
     }
 }
 
@@ -66,6 +74,7 @@ impl Read for Conn {
         match self {
             Conn::Tcp(s) => s.read(b),
             Conn::Unix(s) => s.read(b),
+            Conn::Tls(s) => s.read(b),
         }
     }
 }
@@ -75,12 +84,14 @@ impl Write for Conn {
         match self {
             Conn::Tcp(s) => s.write(b),
             Conn::Unix(s) => s.write(b),
+            Conn::Tls(s) => s.write(b),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             Conn::Tcp(s) => s.flush(),
             Conn::Unix(s) => s.flush(),
+            Conn::Tls(s) => s.flush(),
         }
     }
 }
@@ -227,6 +238,84 @@ pub fn forward_to(
     Ok(())
 }
 
+/// Whether the request asks to become a WebSocket (`Upgrade: websocket`)
+pub fn is_upgrade(head: &[u8]) -> bool {
+    header(head, "upgrade").is_some_and(|u| u.eq_ignore_ascii_case("websocket"))
+}
+
+/// An upgrade (a WebSocket) passed on to `upstream` as `target` (a path and its query; the head's other lines unchanged,
+/// `Connection: Upgrade` kept), then both directions copied until either side closes - the front door between a
+/// client and a model server's /v1/realtime (after nextsycl's glue/serve/src/http.rs). An https client's session is
+/// pumped first (crate::tls), so it is read and written at once.
+pub fn splice(
+    client: &mut Conn,
+    upstream: &Target,
+    req: &Request,
+    target: &str,
+) -> Result<(), String> {
+    let head = String::from_utf8_lossy(&req.head);
+    let mut lines = head.split("\r\n").filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or("");
+    let version = first
+        .rsplit(' ')
+        .next()
+        .filter(|v| v.starts_with("HTTP/"))
+        .unwrap_or("HTTP/1.1");
+    let mut out = format!("{} {target} {version}\r\n", req.method);
+    for l in lines {
+        out.push_str(l);
+        out.push_str("\r\n");
+    }
+    out.push_str("\r\n");
+    let mut up =
+        Conn::connect(upstream).map_err(|e| format!("{upstream} does not answer ({e})"))?;
+    up.nodelay();
+    client.nodelay();
+    up.write_all(out.as_bytes())
+        .and_then(|_| up.flush())
+        .map_err(|e| e.to_string())?;
+    if let Conn::Tls(t) = client {
+        t.pump().map_err(|e| e.to_string())?;
+    }
+    let (mut c_in, mut c_out) = (
+        client.try_clone().map_err(|e| e.to_string())?,
+        client.try_clone().map_err(|e| e.to_string())?,
+    );
+    let (mut u_in, mut u_out) = (up.try_clone().map_err(|e| e.to_string())?, up);
+    let to_up = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut c_in, &mut u_out);
+        u_out.shutdown();
+    });
+    let _ = std::io::copy(&mut u_in, &mut c_out);
+    c_out.shutdown();
+    let _ = to_up.join();
+    Ok(())
+}
+
+impl Conn {
+    /// Small writes sent at once (TCP_NODELAY): a live conversation's frames are small messages each way, and Nagle's
+    /// wait for the last one's ACK against the peer's delayed ACK held each answer up to ~40 ms (a lockstep frame's
+    /// turnaround measured 60 ms over the front door, 18 ms beside it)
+    pub fn nodelay(&self) {
+        if let Conn::Tcp(s) = self {
+            let _ = s.set_nodelay(true);
+        }
+    }
+
+    /// Both directions closed (a splice's end: the other copy's read returns)
+    pub fn shutdown(&self) {
+        let _ = match self {
+            Conn::Tcp(s) => s.shutdown(std::net::Shutdown::Both),
+            Conn::Unix(s) => s.shutdown(std::net::Shutdown::Both),
+            // a pumped session: its pump says close_notify and closes the TCP connection (crate::tls)
+            Conn::Tls(t) => {
+                t.shutdown();
+                Ok(())
+            }
+        };
+    }
+}
+
 /// `forward` with another body: the request's head with its Content-Length set to `body`'s and the connection to
 /// close (the answer is then copied back as it arrives - streamed answers included - until upstream closes)
 pub fn forward_body(
@@ -335,7 +424,7 @@ pub fn content_type(path: &str) -> &'static str {
         "mp4" => "video/mp4",
         "wav" => "audio/wav",
         "woff2" => "font/woff2",
-            "ttf" => "font/ttf",
+        "ttf" => "font/ttf",
         _ => "application/octet-stream",
     }
 }
@@ -673,5 +762,64 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&answer)
         );
+    }
+
+    /// An upgrade passes on with its Upgrade / Connection headers, then bytes flow both ways until upstream closes
+    /// (nextsycl's test)
+    #[test]
+    fn a_splice_copies_both_ways() {
+        let up_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let up_addr = up_l.local_addr().unwrap().to_string();
+        let upstream = std::thread::spawn(move || {
+            let (mut c, _) = up_l.accept().unwrap();
+            let got = read_request(&mut c).unwrap();
+            c.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n").unwrap();
+            // echo what the client sends, upper-cased, then close
+            let mut b = [0u8; 5];
+            c.read_exact(&mut b).unwrap();
+            c.write_all(&b.to_ascii_uppercase()).unwrap();
+            got
+        });
+        // the door: a listener whose one connection is spliced to upstream
+        let door_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let door_addr = door_l.local_addr().unwrap();
+        let door = std::thread::spawn(move || {
+            let (c, _) = door_l.accept().unwrap();
+            let mut conn = Conn::Tcp(c);
+            let req = read_request(&mut conn).unwrap();
+            assert!(is_upgrade(&req.head));
+            splice(
+                &mut conn,
+                &Target::Tcp(up_addr),
+                &req,
+                "/v1/realtime?model=m",
+            )
+            .unwrap();
+        });
+        let mut c = std::net::TcpStream::connect(door_addr).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        c.write_all(b"GET /open/m/v1/realtime?model=m HTTP/1.1\r\nHost: box\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n").unwrap();
+        // a WebSocket client sends nothing before the 101 (RFC 6455): the head the door read had no bytes after it
+        let mut head = Vec::new();
+        let mut b = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            c.read_exact(&mut b).unwrap();
+            head.push(b[0]);
+        }
+        assert!(
+            head.starts_with(b"HTTP/1.1 101"),
+            "{}",
+            String::from_utf8_lossy(&head)
+        );
+        c.write_all(b"hello").unwrap();
+        let mut all = Vec::new();
+        c.read_to_end(&mut all).unwrap();
+        assert_eq!(all, b"HELLO");
+        let got = upstream.join().unwrap();
+        assert_eq!(got.target, "/v1/realtime?model=m");
+        assert!(
+            is_upgrade(&got.head) && header(&got.head, "connection").as_deref() == Some("Upgrade")
+        );
+        door.join().unwrap();
     }
 }

@@ -21,6 +21,7 @@
 //! services over HTTP, the actions by running this same program (`nextrocm image start ...`) or the video studio's
 //! llm.mode, which owns the chat card.
 
+mod ages;
 mod api;
 mod config;
 mod disks;
@@ -36,6 +37,7 @@ pub mod registry;
 mod routes;
 pub mod rsvp;
 mod spec;
+mod unload;
 
 /// What the #[rpc] methods make (methods.rs, rpcgen), as (path under the repo, content): the typed client of the
 /// front door's methods for the wfe pages. `nextrocm gen-api` writes them; a test fails when the committed ones
@@ -227,6 +229,7 @@ pub struct Home {
     token: String,
     /// serve.json beside the registry: the token, the memory each model was seen to take per card
     state_file: PathBuf,
+    pub(crate) ages: ages::Ages,
     cards: Mutex<Value>,
     runs: Mutex<Vec<Run>>,
     next: Mutex<u64>,
@@ -243,7 +246,7 @@ pub struct Home {
     pub(crate) inflight: Mutex<BTreeMap<u16, usize>>,
     /// what each image, audio and 3D server last said of itself (model, loading, busy), by its port
     answers: Mutex<BTreeMap<u16, (String, bool, bool)>>,
-    /// the card each image/audio/3D server was last started on, by port: its card before nvidia-smi lists its process
+    /// the card each image/audio/3D server was last started on, by port: its card before the DRM sampler lists its process
     pub(crate) started_on: Mutex<BTreeMap<u16, usize>>,
     /// image and audio requests as jobs (jobs.json beside serve.json)
     jobs: jobs::Jobs,
@@ -441,12 +444,14 @@ impl Home {
             })
             .unwrap_or_default();
         let jobs = jobs::Jobs::load(state_file.with_file_name("jobs.json"));
+        let state_file_ages = state_file.with_file_name("ages.json");
         let maint_file = crate::maintenance::file_beside(&registry::registry(&o.cfg));
         let maint_bypass = Mutex::new(st["maintenance_bypass"].as_str().unwrap_or("").to_string());
         let h = Arc::new(Home {
             o,
             token,
             state_file,
+            ages: ages::Ages::open(Some(state_file_ages)),
             jobs,
             cards: Mutex::new(json!([])),
             runs: Mutex::new(Vec::new()),
@@ -562,11 +567,76 @@ impl Home {
             "nextrocm serve on http://{addr}/ ({} GPUs)",
             find_cards().len()
         );
+        self.serve_plain(l);
+        Ok(())
+    }
+
+    pub(crate) fn serve_plain(self: Arc<Self>, l: TcpListener) {
         for c in l.incoming().flatten() {
             let me = self.clone();
             std::thread::spawn(move || me.handle(Conn::Tcp(c)));
         }
+    }
+
+    /// The https certificate and key: NS_TLS_CERT / NS_TLS_KEY, else `tls/cert.pem` and `tls/key.pem` beside
+    /// serve.json
+    pub fn tls_files(&self) -> (PathBuf, PathBuf) {
+        let dir = self.state_file.with_file_name("tls");
+        let home = std::env::var("HOME").unwrap_or_default();
+        let set = |k: &str| {
+            let v = self.o.cfg.get(k)?.trim().to_string();
+            (!v.is_empty()).then(|| {
+                PathBuf::from(
+                    v.strip_prefix("~/")
+                        .map_or(v.clone(), |r| format!("{home}/{r}")),
+                )
+            })
+        };
+        (
+            set("NS_TLS_CERT").unwrap_or_else(|| dir.join("cert.pem")),
+            set("NS_TLS_KEY").unwrap_or_else(|| dir.join("key.pem")),
+        )
+    }
+
+    /// The front door over https (crate::tls): the certificate made or kept, then the same routes as `run`, each
+    /// connection's handshake in its own thread. Nothing about the http port changes.
+    pub fn run_tls(self: Arc<Self>, addr: &str) -> Result<(), String> {
+        let (cert, key) = self.tls_files();
+        let sans: Vec<String> = self
+            .o
+            .cfg
+            .get("NS_TLS_SANS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        // Explicit certificate paths are operator-owned: never create or overwrite them.
+        let external = ["NS_TLS_CERT", "NS_TLS_KEY"]
+            .iter()
+            .any(|k| self.o.cfg.get(k).is_some_and(|v| !v.trim().is_empty()));
+        if !external {
+            crate::tls::ensure_cert(&cert, &key, &sans)?;
+        }
+        let cfg = crate::tls::server_config(&cert, &key)?;
+        let l = TcpListener::bind(addr).map_err(|e| format!("cannot listen on {addr}: {e}"))?;
+        eprintln!(
+            "nextrocm serve on https://{addr}/ (certificate {}; GET /cert.pem)",
+            cert.display()
+        );
+        self.serve_tls(l, cfg);
         Ok(())
+    }
+
+    pub(crate) fn serve_tls(self: Arc<Self>, l: TcpListener, cfg: Arc<rustls::ServerConfig>) {
+        for c in l.incoming().flatten() {
+            let (me, cfg) = (self.clone(), cfg.clone());
+            std::thread::spawn(move || match crate::tls::TlsConn::accept(c, cfg) {
+                Ok(t) => me.handle(Conn::Tls(Box::new(t))),
+                // a browser that has not accepted the certificate yet ends here: nothing to log
+                Err(_) => {}
+            });
+        }
     }
 
     fn handle(self: &Arc<Self>, mut s: Conn) {
@@ -666,7 +736,12 @@ impl Home {
                     Ok(l) => l,
                     Err((c, e)) => return http::respond(s, c, &err(e)),
                 };
-                if let Err(e) = http::forward_to(&mut *s, &lease, req, &format!("/{sub}{query}")) {
+                let forwarded = if http::is_upgrade(&req.head) {
+                    http::splice(s, &lease, req, &format!("/{sub}{query}"))
+                } else {
+                    http::forward_to(&mut *s, &lease, req, &format!("/{sub}{query}"))
+                };
+                if let Err(e) = forwarded {
                     http::respond(s, 502, &err(e));
                 }
                 return;
@@ -684,7 +759,12 @@ impl Home {
                     );
                 };
                 let studio = http::Target::Tcp(format!("127.0.0.1:{}", self.o.ports.video));
-                if let Err(e) = http::forward_to(&mut *s, &studio, req, &format!("/{sub}{query}")) {
+                let forwarded = if http::is_upgrade(&req.head) {
+                    http::splice(s, &studio, req, &format!("/{sub}{query}"))
+                } else {
+                    http::forward_to(&mut *s, &studio, req, &format!("/{sub}{query}"))
+                };
+                if let Err(e) = forwarded {
                     http::respond(
                         s,
                         502,
@@ -852,7 +932,7 @@ impl Home {
         });
         json!({"ts": now(), "host": meminfo(), "cards": cards, "models": models, "services": self.services(), "runs": runs,
                "idle_minutes": self.o.idle_minutes, "ports": {"video": self.o.ports.video, "chat_ui": self.o.ports.chat_ui},
-               "maintenance": maintenance, "drives": self.drives_view(&all, &models),
+               "maintenance": maintenance, "cards_taken": self.box_taken(), "cards_taken_gpus": self.taken_gpus(), "drives": self.drives_view(&all, &models),
                // the models a card offers that are not here yet, their downloads, and whether a request fetches one itself
                "available": self.not_downloaded_all(), "pulls": self.pulls_view(), "auto_pull": self.auto_pull()})
     }

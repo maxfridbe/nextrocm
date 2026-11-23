@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::registry;
+use super::{ages, registry};
 use super::{now, Home};
 use crate::http::{call_for, Target};
 use backplane_scheduler::profile::Profile;
@@ -42,13 +42,24 @@ use backplane_scheduler::profile::Profile;
 use backplane_scheduler::host::{Guard, Host};
 use backplane_scheduler::place::{self as splace, Outcome, PlaceReq};
 use backplane_scheduler::room::{
-    self, Card, Idleness, ModelInfo, Proc, Server, Snapshot, JOB_ROOM_WAIT_S, MARGIN_MB,
+    self, Card, Holder, Idleness, ModelInfo, Proc, Server, Snapshot, JOB_ROOM_WAIT_S, MARGIN_MB,
     ROOM_WAIT_S,
 };
 use backplane_scheduler::{eta, rsvp as sr};
 
 /// The video daemon's engines (model ids), and (engine, GPU) per loaded worker
-type VideoDaemon = (Vec<String>, Vec<(String, usize)>);
+type VideoDaemon = (Vec<String>, Vec<VideoWorker>);
+
+/// A video worker holding an engine on a card: its idle clock (the daemon's `idle_seconds`, 0 while a clip runs) and
+/// its idle unload countdown (`unload_in_seconds`)
+#[derive(Clone)]
+struct VideoWorker {
+    engine: String,
+    gpu: usize,
+    idle_s: Option<f64>,
+    running: bool,
+    unload_in: Option<u64>,
+}
 
 /// How long a video request waits for the daemon to come up before 503
 const VIDEO_WAIT_S: u64 = 120;
@@ -59,6 +70,10 @@ fn pinned_ids(all: &[Value]) -> BTreeSet<String> {
         .filter(|m| registry::pinned(m))
         .map(|m| s(m, "id"))
         .collect()
+}
+
+fn chat_unload_due(age: &ages::Age, now: f64, idle_minutes: u64, active: bool) -> bool {
+    ages::unload_in(age, now, idle_minutes, false, active) == Some(0)
 }
 
 /// The arguments that end a server after `idle_minutes` idle: none for a pinned model (or when idle exit is off)
@@ -107,7 +122,111 @@ fn listening(port: u16) -> bool {
 
 /// An image, audio or 3D model: it loads whole on one card (the first of its cards with room)
 fn one_card(m: &Value) -> bool {
-    matches!(registry::kind_of(m), "image" | "audio" | "model3d")
+    (matches!(registry::kind_of(m), "image" | "audio" | "model3d") && !registry::spans(m))
+        || registry::one_of(m)
+}
+
+fn card_figures(
+    m: &Value,
+    gpus: &[usize],
+    cap: &dyn Fn(usize) -> u64,
+) -> Option<BTreeMap<usize, u64>> {
+    let mb = |g: f64, i: usize| ((g * 1024.0) as u64).min(cap(i));
+    if let Some(per) = registry::vram_per_card(m).filter(|_| registry::spans(m)) {
+        let at = |k: usize| per.get(k).or(per.last()).copied().unwrap_or(0.0);
+        return Some(
+            gpus.iter()
+                .enumerate()
+                .map(|(k, i)| (*i, mb(at(k), *i)))
+                .collect(),
+        );
+    }
+    let g = m["vram_gib"].as_f64().filter(|g| *g > 0.0)?;
+    Some(gpus.iter().map(|i| (*i, mb(g, *i))).collect())
+}
+
+/// Each card's memory in all, MiB, as the box reports it (`cards`: gpustat's list, a card's place its index): what the
+/// plans below size against - never a card's name or an assumed size
+pub(super) fn totals_of(cards: &Value) -> Vec<(usize, u64)> {
+    cards
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            c["vram_total_mb"]
+                .as_u64()
+                .filter(|t| *t > 0)
+                .map(|t| (i, t))
+        })
+        .collect()
+}
+
+/// Card `g`'s memory in all, MiB: its own as reported; a card the list does not have yet, the largest the box reports
+/// (a cap no lower than any card here: it can only vouch more, which waits for more room, never less); None when no
+/// card is known (nothing is capped then, and nothing places until the cards are read)
+pub(super) fn card_total(totals: &[(usize, u64)], g: usize) -> Option<u64> {
+    totals
+        .iter()
+        .find(|(i, _)| *i == g)
+        .map(|(_, t)| *t)
+        .or_else(|| totals.iter().map(|(_, t)| *t).max())
+}
+
+/// The most a model may be vouched for on a card of `total` MiB: the card less the 1.5 GiB always kept free
+/// (MARGIN_MB) and 512 MiB the driver takes; no cap on a card not known
+pub(super) fn vouch_cap(total: Option<u64>) -> u64 {
+    total.map_or(u64::MAX, |t| t.saturating_sub(MARGIN_MB + 512))
+}
+
+/// A model's memory on each of its cards, MiB, from what is known of it (the arithmetic of `Home::vouched_mb`, no I/O):
+/// `seen` what it took on each card while it ran here, else its model card's figures, else its files' (`files_mb`)
+/// share by kind - each never more than its card holds beside the spare (`vouch_cap` of `total`). Whether it was seen
+/// comes with it.
+pub(super) fn vouch(
+    m: &Value,
+    gpus: &[usize],
+    seen: Option<&BTreeMap<usize, u64>>,
+    files_mb: u64,
+    total: &dyn Fn(usize) -> Option<u64>,
+) -> (BTreeMap<usize, u64>, bool) {
+    let single = one_card(m);
+    let cap = |g: usize| vouch_cap(total(g));
+    // a model that ran fits the card: a peak seen above what a card may be asked for (an edit's, with its vision tower,
+    // touching the card's whole memory) would otherwise refuse the model from then on, its margin never free
+    if let Some(seen) = seen {
+        if single && !seen.is_empty() {
+            let mb = seen.values().copied().max().unwrap_or(0);
+            return (gpus.iter().map(|g| (*g, mb.min(cap(*g)))).collect(), true);
+        }
+        if !single && gpus.iter().all(|i| seen.contains_key(i)) {
+            return (
+                gpus.iter().map(|g| (*g, seen[g].min(cap(*g)))).collect(),
+                true,
+            );
+        }
+    }
+    if let Some(v) = card_figures(m, gpus, &cap) {
+        return (v, false);
+    }
+    // (a spanning model's files are shared out over its cards, as a chat model's)
+    let files = if registry::spans(m) {
+        files_mb / gpus.len().max(1) as u64
+    } else {
+        files_mb
+    };
+    let per = |g: usize| match registry::kind_of(m) {
+        // a video model takes its card, less 4 GiB (on a card not known: its files and 4 GiB)
+        "video" => total(g).map_or(files + 4096, |t| t.saturating_sub(4096)),
+        "image" => files * 105 / 100 + 4096,
+        "audio" => files * 110 / 100 + 2048,
+        "model3d" => files * 110 / 100 + 6144,
+        _ => files / gpus.len().max(1) as u64 + 2048,
+    };
+    (
+        gpus.iter().map(|g| (*g, per(*g).min(cap(*g)))).collect(),
+        false,
+    )
 }
 
 /// A chat model whose model card spreads one copy over every card (`gpus: all`; its title says "both GPUs"): it
@@ -143,6 +262,23 @@ fn held_on(cards: &Value, id: &str) -> Vec<usize> {
 }
 
 /// The card the server listening on `port` is on (its process's --port), in the named cards
+fn cards_of_port(cards: &Value, port: u16) -> Vec<usize> {
+    let port = port.to_string();
+    cards
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| {
+            c["procs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|p| p["port"].as_str() == Some(port.as_str()))
+        })
+        .filter_map(|c| c["index"].as_u64().map(|g| g as usize))
+        .collect()
+}
+
 fn card_of_port(cards: &Value, port: u16) -> Option<usize> {
     let port = port.to_string();
     cards
@@ -178,6 +314,7 @@ pub(crate) struct Lease<'a> {
     /// the model served and the keep-alive granted the request (rsvp_s): its hold starts when this is dropped, at
     /// the end of the request's work - answered, failed or cancelled
     hold: Option<(String, f64)>,
+    track_request: bool,
 }
 
 impl std::ops::Deref for Lease<'_> {
@@ -191,6 +328,9 @@ impl Drop for Lease<'_> {
     fn drop(&mut self) {
         if let Some(n) = self.home.inflight.lock().unwrap().get_mut(&self.port) {
             *n = n.saturating_sub(1);
+        }
+        if self.track_request {
+            self.home.ages.end(&ages::port_key(self.port), now());
         }
         if let Some((id, secs)) = self.hold.take() {
             self.home.hold_after(&id, secs);
@@ -374,6 +514,58 @@ pub(crate) fn clean_title(m: &Value) -> Value {
     }
 }
 
+pub(super) fn needs_all_cards(m: &Value) -> bool {
+    (registry::kind_of(m) == "llm" && !registry::one_of(m)) || registry::spans(m)
+}
+
+pub(super) fn cards_it_fits(
+    m: &Value,
+    gpus: &[usize],
+    files_mb: u64,
+    total: &dyn Fn(usize) -> Option<u64>,
+) -> Result<Vec<usize>, String> {
+    if m["streams"] == true || !matches!(registry::kind_of(m), "image" | "audio" | "model3d") {
+        return Ok(gpus.to_vec());
+    }
+    let (need, _) = vouch(m, gpus, None, files_mb, &|_| None);
+    let short: Vec<(usize, u64, u64)> = gpus
+        .iter()
+        .filter_map(|g| {
+            let (n, t) = (need.get(g).copied().unwrap_or(0), total(*g)?);
+            (n.saturating_add(MARGIN_MB) > t).then_some((*g, n, t))
+        })
+        .collect();
+    let fits: Vec<usize> = gpus
+        .iter()
+        .copied()
+        .filter(|g| !short.iter().any(|s| s.0 == *g))
+        .collect();
+    if short.is_empty() || (!registry::spans(m) && !fits.is_empty()) {
+        return Ok(fits);
+    }
+    let gib = |mb: u64| mb as f64 / 1024.0;
+    let each: Vec<String> = short
+        .iter()
+        .map(|(g, n, t)| {
+            format!(
+                "{:.1} GiB on GPU {g}, which holds {:.1} GiB",
+                gib(*n),
+                gib(*t)
+            )
+        })
+        .collect();
+    Err(format!("{} cannot load on its cards: it needs {} (with {:.1} GiB kept free) - a model larger than its cards is refused, not tried",
+                s(m, "id"), each.join("; "), gib(MARGIN_MB)))
+}
+
+fn pick_card(plans: &[(usize, Option<Vec<Holder>>)]) -> usize {
+    plans
+        .iter()
+        .position(|(_, p)| p.as_ref().is_some_and(Vec::is_empty))
+        .or_else(|| plans.iter().position(|(_, p)| p.is_some()))
+        .unwrap_or(0)
+}
+
 impl Home {
     pub(crate) fn ncards(&self) -> usize {
         self.cards
@@ -394,7 +586,7 @@ impl Home {
             return (0..self.ncards()).collect();
         }
         let v: Vec<usize> = g
-            .split([',', ' '])
+            .split([',', ' ', '|'])
             .filter_map(|x| x.trim().parse().ok())
             .collect();
         if v.is_empty() {
@@ -460,6 +652,22 @@ impl Home {
         if self.chat_loaded(&self.models()).as_deref() == Some(id) {
             return Ok(());
         }
+        let m = self.entry(id)?;
+        if registry::one_of(&m) {
+            let g = registry::chat_gpu(&self.o.cfg, id)
+                .filter(|g| self.gpus_of(&m).contains(g))
+                .ok_or_else(|| {
+                    (
+                        503,
+                        "cards taken: no fresh selected GPU; retry placement".into(),
+                    )
+                })?;
+            if let Some(why) = self.card_taken(g) {
+                return Err((503, why));
+            }
+        } else if let Some(why) = self.taken_for(&m) {
+            return Err((503, why));
+        }
         if listening(self.o.ports.llm) {
             self.exec(
                 "llm stop (another model)".into(),
@@ -485,44 +693,20 @@ impl Home {
     /// The memory a model takes on each of its cards, MiB: as seen while it ran, else its model card's `vram_gib` (as
     /// measured where it runs), else from its files' sizes - never more than a card holds beside the spare. An image or
     /// audio model loads whole on one of its cards: what it takes there, for each.
-    fn vouched_mb(&self, m: &Value, card_mb: u64) -> (BTreeMap<usize, u64>, bool) {
-        let id = s(m, "id");
-        let gpus = self.gpus_of(m);
-        let single = one_card(m);
-        // a model that ran fits the card: a peak seen above what a card may be asked for (an edit's, with its vision tower,
-        // touching the card's whole memory) would otherwise refuse the model from then on, its margin never free
-        let cap = card_mb.saturating_sub(MARGIN_MB + 512);
-        if let Some(seen) = self.seen.lock().unwrap().get(&id) {
-            if single && !seen.is_empty() {
-                let mb = seen.values().copied().max().unwrap_or(0).min(cap);
-                return (gpus.iter().map(|g| (*g, mb)).collect(), true);
-            }
-            if !single && gpus.iter().all(|i| seen.contains_key(i)) {
-                return (gpus.iter().map(|g| (*g, seen[g].min(cap))).collect(), true);
-            }
-        }
-        if let Some(g) = m["vram_gib"].as_f64().filter(|g| *g > 0.0) {
-            return (
-                gpus.iter()
-                    .map(|i| (*i, ((g * 1024.0) as u64).min(cap)))
-                    .collect(),
-                false,
-            );
-        }
-        let files: u64 = registry::paths(m)
+    fn vouched_mb(&self, m: &Value, totals: &[(usize, u64)]) -> (BTreeMap<usize, u64>, bool) {
+        let files = registry::paths(m)
             .iter()
             .filter(|p| p.is_file())
             .filter_map(|p| std::fs::metadata(p).ok())
             .map(|x| x.len() >> 20)
             .sum();
-        let per = match registry::kind_of(m) {
-            "video" => card_mb.saturating_sub(4096),
-            "image" => files * 105 / 100 + 4096,
-            "audio" => files * 110 / 100 + 2048,
-            "model3d" => files * 110 / 100 + 6144,
-            _ => files / gpus.len() as u64 + 2048,
-        };
-        (gpus.iter().map(|g| (*g, per.min(cap))).collect(), false)
+        vouch(
+            m,
+            &self.gpus_of(m),
+            self.seen.lock().unwrap().get(&s(m, "id")),
+            files,
+            &|g| card_total(totals, g),
+        )
     }
 
     /// Of what a model is vouched for on each card, MiB: the part that is not its weights - the working memory it
@@ -708,8 +892,18 @@ impl Home {
                 continue;
             }
             for x in self.servers(kind) {
-                v.push(json!({"kind": kind, "slot": x.slot, "port": x.port, "gpu": card_of_port(cards, x.port).or(x.gpu),
-                              "model": x.model, "loading": x.loading, "busy": x.busy && !x.loading, "up": x.model.is_some()}));
+                let mut row = json!({"kind": kind, "slot": x.slot, "port": x.port, "gpu": card_of_port(cards, x.port).or(x.gpu),
+                                     "model": x.model, "loading": x.loading, "busy": x.busy && !x.loading, "up": x.model.is_some()});
+                row["gpus"] = json!(cards_of_port(cards, x.port));
+                let age = self
+                    .ages
+                    .get(&ages::port_key(x.port))
+                    .filter(|a| !x.loading && x.model.as_deref() == Some(a.model.as_str()));
+                extend_age(
+                    &mut row,
+                    age.map_or_else(ages::unknown, |a| a.view(now(), x.busy && !x.loading)),
+                );
+                v.push(row);
             }
         }
         if all
@@ -718,8 +912,17 @@ impl Home {
         {
             if let Ok(st) = call_for(&self.target("video"), "GET", "/engine/status", None, 4) {
                 for g in st["gpus"].as_array().into_iter().flatten() {
-                    v.push(json!({"kind": "video", "slot": g["gpu"], "gpu": g["gpu"], "model": g["denoiser"],
-                                  "loading": false, "busy": !g["running"].is_null(), "up": g["engine"].as_str().is_some_and(|e| e != "unloaded")}));
+                    let mut row = json!({"kind": "video", "slot": g["gpu"], "gpu": g["gpu"], "model": g["denoiser"],
+                                         "loading": false, "busy": !g["running"].is_null(), "up": g["engine"].as_str().is_some_and(|e| e != "unloaded")});
+                    let age = g["gpu"]
+                        .as_u64()
+                        .and_then(|n| self.ages.get(&ages::video_key(n as usize)))
+                        .filter(|a| row["up"] == true && g["denoiser"] == a.model.as_str());
+                    extend_age(
+                        &mut row,
+                        age.map_or_else(ages::unknown, |a| a.view(now(), !g["running"].is_null())),
+                    );
+                    v.push(row);
                 }
             }
         }
@@ -732,9 +935,29 @@ impl Home {
             let gpus = all
                 .iter()
                 .find(|m| m["id"] == id.as_str())
-                .map(|m| self.gpus_of(m))
+                .map(|m| {
+                    let g = self.gpus_of(m);
+                    if registry::one_of(m) {
+                        if let Some(on) = held_on(cards, &id)
+                            .into_iter()
+                            .find(|i| g.contains(i))
+                            .or_else(|| {
+                                registry::chat_gpu(&self.o.cfg, &id).filter(|i| g.contains(i))
+                            })
+                        {
+                            return vec![on];
+                        }
+                    }
+                    g
+                })
                 .unwrap_or_default();
-            v.push(json!({"kind": "llm", "slot": 0, "gpu": gpus.first(), "gpus": gpus, "model": id, "loading": false, "busy": false, "up": true}));
+            let mut row = json!({"kind": "llm", "slot": 0, "gpu": gpus.first(), "gpus": gpus, "model": id, "loading": false, "busy": false, "up": true});
+            let age = self.ages.get(ages::CHAT).filter(|a| a.model == id);
+            extend_age(
+                &mut row,
+                age.map_or_else(ages::unknown, |a| a.view(now(), false)),
+            );
+            v.push(row);
         }
         v
     }
@@ -786,10 +1009,13 @@ impl Home {
             .flatten()
             .filter(|g| g["engine"].as_str().is_some_and(|e| e != "unloaded"))
             .filter_map(|g| {
-                Some((
-                    g["denoiser"].as_str()?.to_string(),
-                    g["gpu"].as_u64()? as usize,
-                ))
+                Some(VideoWorker {
+                    engine: g["denoiser"].as_str()?.to_string(),
+                    gpu: g["gpu"].as_u64()? as usize,
+                    idle_s: g["idle_seconds"].as_f64(),
+                    running: !g["running"].is_null(),
+                    unload_in: g["unload_in_seconds"].as_u64(),
+                })
             })
             .collect();
         Some((names, loaded))
@@ -797,12 +1023,6 @@ impl Home {
 
     /// Every registered model (LoRAs aside): kind, enabled, cards, state, memory vouched for
     pub(crate) fn model_states(&self, all: &[Value], cards: &Value) -> Vec<Value> {
-        let card_mb = |g: usize| {
-            cards
-                .get(g)
-                .and_then(|c| c["vram_total_mb"].as_u64())
-                .unwrap_or(32768)
-        };
         let loading = self.loading.lock().unwrap().clone();
         let need = |k: &str| all.iter().any(|m| registry::kind_of(m) == k);
         let chat = if need("llm") {
@@ -837,6 +1057,121 @@ impl Home {
         } else {
             None
         };
+        let t = now();
+        // each loaded copy's clocks (ages.rs): the servers by port, the chat server, the video workers by card
+        let mut copies: BTreeMap<String, (Vec<Value>, Option<u64>)> = BTreeMap::new();
+        let kept = self.kept_ids(all);
+        for slots in [&image, &audio, &m3d] {
+            for x in slots.iter() {
+                let key = ages::port_key(x.port);
+                let Some(model) = x.model.as_deref().filter(|m| !m.is_empty()) else {
+                    self.ages.gone(&key);
+                    continue;
+                };
+                if x.loading {
+                    continue;
+                }
+                let age = self.ages.seen(&key, model, t, || None);
+                let mut v = age.view(t, x.busy);
+                let unload =
+                    ages::unload_in(&age, t, self.o.idle_minutes, kept.contains(model), x.busy);
+                v["gpu"] = json!(card_of_port(cards, x.port).or(x.gpu));
+                v["gpus"] = json!(cards_of_port(cards, x.port));
+                v["port"] = json!(x.port);
+                v["busy"] = json!(x.busy);
+                v["unload_in_s"] = json!(unload);
+                let e = copies.entry(model.to_string()).or_default();
+                e.0.push(v);
+                e.1 = match (e.1, unload) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+        }
+        if let Some(id) = chat.0.as_deref() {
+            let (active, last) = self.chat_requests();
+            let age = self
+                .ages
+                .seen(ages::CHAT, id, t, || self.chat_uptime().map(|u| t - u));
+            self.ages.last_was(ages::CHAT, last);
+            let age = self.ages.get(ages::CHAT).unwrap_or(age);
+            let mut v = age.view(t, active);
+            let g = all
+                .iter()
+                .find(|m| m["id"] == id)
+                .map(|m| {
+                    let mut g = self.gpus_of(m);
+                    if registry::one_of(m) {
+                        if let Some(on) = held_on(cards, id)
+                            .into_iter()
+                            .find(|i| g.contains(i))
+                            .or_else(|| {
+                                registry::chat_gpu(&self.o.cfg, id).filter(|i| g.contains(i))
+                            })
+                        {
+                            g = vec![on];
+                        }
+                    }
+                    g
+                })
+                .unwrap_or_default();
+            v["gpu"] = json!(g.first());
+            v["gpus"] = json!(g);
+            v["port"] = json!(self.o.ports.llm);
+            v["busy"] = json!(active);
+            // its idle unload (chat_idle_unload, every 30 s): none while pinned, held (rsvp_s), kept by a request
+            // (keep_up_s) or answering
+            let held = kept.contains(id)
+                || self
+                    .chat_keep
+                    .lock()
+                    .unwrap()
+                    .get(id)
+                    .is_some_and(|until| *until > t);
+            let unload = ages::unload_in(&age, t, self.o.idle_minutes, held, active);
+            v["unload_in_s"] = json!(unload);
+            let e = copies.entry(id.to_string()).or_default();
+            e.0.push(v);
+            e.1 = match (e.1, unload) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        } else if need("llm") {
+            self.ages.gone(ages::CHAT);
+        }
+        if let Some((_, workers)) = &video {
+            for g in 0..cards.as_array().map_or(0, Vec::len) {
+                if !workers.iter().any(|w| w.gpu == g) {
+                    self.ages.gone(&ages::video_key(g));
+                }
+            }
+            for w in workers {
+                let key = ages::video_key(w.gpu);
+                self.ages.seen(&key, &w.engine, t, || None);
+                self.ages.last_was(
+                    &key,
+                    if w.running {
+                        Some(t)
+                    } else {
+                        w.idle_s.map(|i| t - i)
+                    },
+                );
+                let Some(age) = self.ages.get(&key) else {
+                    continue;
+                };
+                let mut v = age.view(t, w.running);
+                v["gpu"] = json!(w.gpu);
+                v["port"] = Value::Null;
+                v["busy"] = json!(w.running);
+                v["unload_in_s"] = json!(w.unload_in.filter(|_| !kept.contains(&w.engine)));
+                let e = copies.entry(w.engine.clone()).or_default();
+                e.0.push(v);
+                e.1 = match (e.1, w.unload_in) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+        }
         // the model cards, read once: for the headroom of entries registered before cards carried it
         // and whether a chat model spans every card
         let mc = if all
@@ -852,11 +1187,11 @@ impl Home {
             let (id, kind) = (s(m, "id"), registry::kind_of(m).to_string());
             let enabled = m["enabled"] != false;
             let gpus = self.gpus_of(m);
-            let (mut vouch, measured) = self.vouched_mb(m, gpus.first().map_or(32768, |g| card_mb(*g)));
+            let (mut vouch, measured) = self.vouched_mb(m, &totals_of(cards));
             // an image or audio model allowed several cards counts on the ones its copies are on, else the first it tries
             if one_card(m) && vouch.len() > 1 {
                 let on: Vec<usize> = held_on(cards, &id).into_iter().filter(|g| vouch.contains_key(g)).collect();
-                let on = if on.is_empty() { vec![gpus[0]] } else { on };
+                let on = if on.is_empty() { vec![registry::chat_gpu(&self.o.cfg,&id).filter(|g|registry::one_of(m)&&gpus.contains(g)).unwrap_or(gpus[0])] } else { on };
                 vouch.retain(|g, _| on.contains(g));
             }
             let (headroom, headroom_given) = Self::headroom_mb(m, &mc, &vouch);
@@ -876,7 +1211,7 @@ impl Home {
                     }
                 }
                 "video" => match &video {
-                    Some((_, loaded)) if loaded.iter().any(|(e, _)| *e == id) => "loaded",
+                    Some((_, loaded)) if loaded.iter().any(|w| w.engine == id) => "loaded",
                     Some((names, _)) if names.contains(&id) => "ready",
                     _ => "unloaded",
                 },
@@ -893,7 +1228,7 @@ impl Home {
             let card = mc.iter().find(|c| [s(m, "catalog"), s(m, "id")].iter().any(|i| !i.is_empty() && c["id"] == i.as_str()));
             let licence = registry::licence(if m.get("license").is_some() { m } else { card.unwrap_or(m) });
             let mut row = json!({"id": id, "kind": kind, "title": m["title"], "arch": m["arch"], "enabled": enabled, "pinned": enabled && registry::pinned(m), "held_s": self.held_s(&id).round(), "gpus": gpus, "state": state,
-                   "spans": spans_all(m, &mc),
+                   "spans": spans_all(m, &mc), "gpus_one_of": registry::one_of(m),
                    "capabilities": caps, "methods": methods,
                    "vouch_mb": vouch.iter().map(|(g, mb)| (g.to_string(), json!(mb))).collect::<serde_json::Map<String, Value>>(),
                    "measured": measured,
@@ -903,6 +1238,9 @@ impl Home {
                                                       .find(|x| x.model.as_deref() == Some(id.as_str())).map_or(self.port_of(&kind), |x| x.port)),
                                                   "video" => json!(self.o.ports.video), _ => json!(self.o.ports.chat_ui) }});
             row.as_object_mut().unwrap().extend(licence);
+            for key in ["annotations", "annotations_note", "controls"] {
+                if let Some(value)=m.get(key).or_else(||card.and_then(|c|c.get(key))) { row[key]=value.clone(); }
+            }
             // its concurrency profile (the card's; "unmeasured" until a bench says otherwise) and the copies running now
             let prof = if m.get("concurrency").is_some() || m.get("coexistence").is_some() { Profile::of_entry(m) }
                        else { card.map_or_else(Profile::default, Profile::of_entry) };
@@ -916,6 +1254,9 @@ impl Home {
             row["copies_now"] = json!(copies_now);
             row["concurrency"] = pc;
             row["coexistence"] = px;
+            let (inst, unload) = copies.remove(&id).unwrap_or_default();
+            let unload = if kept.contains(&id) { None } else { unload };
+            row.as_object_mut().unwrap().extend(ages::model_view(&inst, unload).as_object().cloned().unwrap_or_default());
             row
         }).collect()
     }
@@ -959,6 +1300,36 @@ impl Home {
                     }
                 }
             }
+            for v in &mut list {
+                if let Some(m) = models.iter().find(|m| m["id"] == v["model"]) {
+                    let instances: Vec<Value> = m["instances"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|x| {
+                            x["gpu"].as_u64().map(|g| g.to_string()) == Some(gi.clone())
+                                || x["gpus"].as_array().is_some_and(|a| {
+                                    a.iter().any(|g| {
+                                        g.as_u64().map(|g| g.to_string()) == Some(gi.clone())
+                                    })
+                                })
+                        })
+                        .cloned()
+                        .collect();
+                    let until = instances
+                        .iter()
+                        .filter_map(|x| x["unload_in_s"].as_u64())
+                        .min();
+                    if let Some(o) = v.as_object_mut() {
+                        o.extend(
+                            ages::model_view(&instances, until)
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        );
+                    }
+                }
+            }
             let counted = |v: &&Value| v["counted"] == true;
             let sum: u64 = list
                 .iter()
@@ -977,7 +1348,7 @@ impl Home {
         }
     }
 
-    fn entry(&self, id: &str) -> Result<Value, (u16, String)> {
+    pub(super) fn entry(&self, id: &str) -> Result<Value, (u16, String)> {
         let m = registry::find(&self.o.cfg, id)
             .map_err(|e| (500, e))?
             .ok_or_else(|| (404, format!("no model {id} (nextrocm models list)")))?;
@@ -1019,7 +1390,7 @@ impl Home {
                     .iter()
                     .map(|x| x.to_string())
                     .collect::<Vec<_>>()
-                    .join(","));
+                    .join(if registry::one_of(&m) { "|" } else { "," }));
             }
         })
         .map_err(|e| (500, e))?;
@@ -1090,7 +1461,7 @@ impl Home {
                 .iter()
                 .map(|x| x.to_string())
                 .collect::<Vec<_>>()
-                .join(","))
+                .join(if registry::one_of(&m) { "|" } else { "," }))
         })
         .map_err(|e| (500, e))?;
         if kind == "video" && m["enabled"] != false {
@@ -1166,6 +1537,16 @@ impl Home {
         if let Some(why) = self.moving_why(id) {
             return Err((409, why));
         }
+        if let Some(why) = self.taken_for(&m) {
+            let loaded = match registry::kind_of(&m) {
+                "llm" => self.chat_loaded(&self.models()).as_deref() == Some(id),
+                "video" => true,
+                k => self.loaded_of(k).iter().any(|x| x == id),
+            };
+            if !loaded {
+                return Err((503, why));
+            }
+        }
         if self
             .loading
             .lock()
@@ -1187,9 +1568,61 @@ impl Home {
         Ok(())
     }
 
+    /// A GPU run holding the lock (crate::gpulock, NS_GPU_LOCK): its sentence and the cards it takes
+    fn gpu_run(&self) -> Option<(String, crate::gpulock::Taken)> {
+        let f = crate::gpulock::path(self.o.cfg.get("NS_GPU_LOCK"))?;
+        crate::gpulock::taken(&f).map(|t| (crate::gpulock::message(&f, &t), t))
+    }
+
+    /// A GPU run holding any card (crate::gpulock): the sentence (the video queue pauses for it)
+    pub(crate) fn cards_taken(&self) -> Option<String> {
+        self.gpu_run().map(|(m, _)| m)
+    }
+
+    /// A GPU run holding every card: the sentence - nothing loads on this box (system.busy's `cards_taken`)
+    pub(crate) fn box_taken(&self) -> Option<String> {
+        let all: Vec<usize> = (0..self.ncards().max(1)).collect();
+        self.gpu_run()
+            .filter(|(_, t)| t.among(&all).len() == all.len())
+            .map(|(m, _)| m)
+    }
+
+    /// The cards a GPU run holds (system.busy's `cards_taken_gpus`; every card when it named none)
+    pub(crate) fn taken_gpus(&self) -> Vec<usize> {
+        self.gpu_run()
+            .map(|(_, t)| t.among(&(0..self.ncards().max(1)).collect::<Vec<_>>()))
+            .unwrap_or_default()
+    }
+
+    /// A GPU run holding card `g`: the sentence
+    pub(crate) fn card_taken(&self, g: usize) -> Option<String> {
+        self.gpu_run().filter(|(_, t)| t.takes(g)).map(|(m, _)| m)
+    }
+
+    /// A GPU run keeping a load of `m` off its cards (one of them for a model that needs them all - spanning, or a chat
+    /// model spread over them - else every one): the sentence
+    pub(crate) fn taken_for(&self, m: &Value) -> Option<String> {
+        let all_needed = needs_all_cards(m);
+        let gpus = self.gpus_of(m);
+        self.gpu_run()
+            .filter(|(_, t)| t.bars(&gpus, all_needed))
+            .map(|(m, _)| m)
+    }
+
     /// Load `id` and return when it answers
     pub(crate) fn load(&self, id: &str) -> Result<(), (u16, String)> {
         let m = self.entry(id)?;
+        if let Some(why) = self.taken_for(&m) {
+            let loaded = match registry::kind_of(&m) {
+                "llm" => self.chat_loaded(&self.models()).as_deref() == Some(id),
+                "video" => true,
+                k => self.loaded_of(k).iter().any(|x| x == id),
+            };
+            if !loaded {
+                return Err((503, why));
+            }
+        }
+
         if let Some(why) = self.moving_why(id) {
             return Err((409, why));
         }
@@ -1230,16 +1663,37 @@ impl Home {
 
     /// Unload `id` if it is loaded (after the requests it is answering)
     pub(crate) fn unload(&self, id: &str) -> Result<(), (u16, String)> {
+        self.unload_on(id, None)
+    }
+
+    /// Unload only the named card/copy ports when requested; other copies stay.
+    pub(crate) fn unload_on(
+        &self,
+        id: &str,
+        only: Option<(usize, &[u16])>,
+    ) -> Result<(), (u16, String)> {
         let m = self.entry(id)?;
+        let _g = self.kind_lock[registry::kind_of(&m)].lock().unwrap();
+        self.unload_on_locked(id, only)
+    }
+
+    /// Caller holds the kind lock across its idle verdict and stop.
+    pub(super) fn unload_on_locked(
+        &self,
+        id: &str,
+        only: Option<(usize, &[u16])>,
+    ) -> Result<(), (u16, String)> {
+        let m = self.entry(id)?;
+        if self.end_hold(id) {
+            eprintln!("unload {id}: its hold ended");
+        }
         let kind = registry::kind_of(&m);
         match kind {
             "image" | "audio" | "model3d" => {
-                let _g = self.kind_lock[kind].lock().unwrap();
-                for x in self
-                    .servers(kind)
-                    .iter()
-                    .filter(|x| x.model.as_deref() == Some(id))
-                {
+                for x in self.servers(kind).iter().filter(|x| {
+                    x.model.as_deref() == Some(id)
+                        && only.is_none_or(|(_, ports)| ports.contains(&x.port))
+                }) {
                     self.exec(
                         format!("{kind} stop ({id})"),
                         &[
@@ -1253,13 +1707,15 @@ impl Home {
                 }
                 Ok(())
             }
-            "video" => self
-                .exec(
-                    "video: unload the engines".into(),
-                    &["video".into(), "unload".into()],
-                )
-                .map(|_| ())
-                .map_err(|e| (500, e)),
+            "video" => {
+                let mut args: Vec<String> = vec!["video".into(), "unload".into()];
+                if let Some((gpu, _)) = only {
+                    args.extend(["--gpu".into(), gpu.to_string()]);
+                }
+                self.exec("video: unload the engines".into(), &args)
+                    .map(|_| ())
+                    .map_err(|e| (500, e))
+            }
             _ => {
                 if self.chat_loaded(&self.models()).as_deref() == Some(id) && !self.studio_chat(id)
                 {
@@ -1305,7 +1761,7 @@ impl Home {
             .find(|slot| slot.model.as_deref() == Some(id) && !slot.loading)
             .map(|slot| slot.port)
             .ok_or_else(unavailable)?;
-        let mut lease = self.lease(port);
+        let mut lease = self.lease_with_tracking(port, false);
         lease.hold = None;
         Ok(lease)
     }
@@ -1386,17 +1842,35 @@ impl Home {
         kind: &str,
         job: Option<&str>,
     ) -> Result<Result<Lease<'_>, String>, (u16, String)> {
-        let info = self.model_info(m);
         let _g = self.kind_lock[kind].lock().unwrap();
-        let card_mb = |c: &Value| c["vram_total_mb"].as_u64().unwrap_or(0);
-        let (need, _) = self.vouched_mb(
-            m,
-            self.cards
-                .lock()
-                .unwrap()
-                .get(info.gpus[0])
-                .map_or(32768, card_mb),
-        );
+        let mut info = self.model_info(m);
+        let totals = totals_of(&self.cards.lock().unwrap());
+        info.gpus = cards_it_fits(m, &info.gpus, files_mb(m), &|g| card_total(&totals, g))
+            .map_err(|e| (409, e))?;
+        let blocked = self.taken_for(m);
+        info.gpus.retain(|g| self.card_taken(*g).is_none());
+        if blocked.is_some() || info.gpus.is_empty() {
+            // An already loaded copy still answers; never allocate another beside a GPU run.
+            if let Some(x) = self
+                .servers(kind)
+                .into_iter()
+                .filter(|x| x.model.as_deref() == Some(id))
+                .min_by_key(|x| (x.busy, x.loading))
+            {
+                if x.loading {
+                    self.wait_up(x.port, id)?;
+                }
+                return Ok(Ok(self.lease(x.port)));
+            }
+            return Err((
+                503,
+                blocked
+                    .or_else(|| self.cards_taken())
+                    .unwrap_or_else(|| "cards taken by a GPU run".into()),
+            ));
+        }
+
+        let (need, _) = self.vouched_mb(m, &totals_of(&self.cards.lock().unwrap()));
         let asked = self.asked.lock().unwrap().get(id).copied().unwrap_or(0);
         Ok(
             match splace::place(
@@ -1437,7 +1911,9 @@ impl Home {
                 index: c["index"].as_u64().unwrap_or(0) as usize,
                 name: s(c, "name"),
                 total_mb: c["vram_total_mb"].as_u64().unwrap_or(0),
-                used_mb: c["vram_used_mb"].as_u64().unwrap_or(0),
+                used_mb: c["vram_used_mb"]
+                    .as_u64()
+                    .unwrap_or_else(|| c["vram_total_mb"].as_u64().unwrap_or(u64::MAX)),
                 procs: c["procs"]
                     .as_array()
                     .into_iter()
@@ -1611,6 +2087,39 @@ impl Home {
     }
 
     /// The chat server's control socket (its /server routes are not on its port)
+    fn chat_requests(&self) -> (bool, Option<f64>) {
+        let Ok(v) = call_for(
+            &Target::Unix(self.chat_socket()),
+            "GET",
+            "/server/requests",
+            None,
+            3,
+        ) else {
+            return (true, None);
+        };
+        let active = v["active"].as_array().is_none_or(|a| !a.is_empty());
+        let last = v["done"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r["ended"].as_f64().or_else(|| r["started"].as_f64()))
+            .reduce(f64::max);
+        (active, last)
+    }
+
+    /// How long the chat server has been up (its /server/status), for a chat model loaded before this front door
+    fn chat_uptime(&self) -> Option<f64> {
+        call_for(
+            &Target::Unix(self.chat_socket()),
+            "GET",
+            "/server/status",
+            None,
+            3,
+        )
+        .ok()?["uptime_seconds"]
+            .as_f64()
+    }
+
     pub(crate) fn chat_socket(&self) -> std::path::PathBuf {
         self.o
             .cfg
@@ -1640,6 +2149,9 @@ impl Home {
         if cur.as_deref() == Some(id) {
             return Ok(());
         }
+        if let Some(why) = self.taken_for(m) {
+            return Err((503, why));
+        }
         // the chat server holds one model at a time: a pinned or held one is not swapped out for this one
         if let Some(c) = cur.filter(|c| self.kept_ids(&all).contains(c)) {
             let why = if pinned_ids(&all).contains(&c) {
@@ -1657,9 +2169,9 @@ impl Home {
                 cards
                     .get(g)
                     .and_then(|c| c["vram_total_mb"].as_u64())
-                    .unwrap_or(32768)
+                    .unwrap_or(0)
             };
-            let (need, _) = self.vouched_mb(m, card_mb(gpus[0]));
+            let (need, _) = self.vouched_mb(m, &totals_of(&cards));
             let snap = self.snapshot();
             let info = self.model_info(m);
             // what the chat model loaded now holds on a card (it leaves)
@@ -1678,12 +2190,52 @@ impl Home {
                     .sum::<u64>()
             };
             let want = |g: usize| {
-                (need.get(&g).copied().unwrap_or(0) + MARGIN_MB).saturating_sub(chat_on(g))
+                need.get(&g)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_add(MARGIN_MB)
+                    .saturating_sub(chat_on(g))
             };
             let free = |g: usize| {
                 cards.get(g).map_or(0, |c| {
-                    card_mb(g).saturating_sub(c["vram_used_mb"].as_u64().unwrap_or(0))
+                    card_mb(g).saturating_sub(c["vram_used_mb"].as_u64().unwrap_or(u64::MAX))
                 })
+            };
+            let chosen;
+            let gpus = if registry::one_of(m) {
+                let plans: Vec<_> = gpus
+                    .iter()
+                    .filter(|g| self.card_taken(**g).is_none())
+                    .map(|g| {
+                        (
+                            *g,
+                            if free(*g) >= want(*g) {
+                                Some(Vec::new())
+                            } else {
+                                room::room_plan(
+                                    &snap,
+                                    &Sched(self),
+                                    *g,
+                                    want(*g),
+                                    "llm",
+                                    false,
+                                    Some(&info),
+                                )
+                            },
+                        )
+                    })
+                    .collect();
+                if plans.is_empty() {
+                    return Err((
+                        503,
+                        self.cards_taken()
+                            .unwrap_or_else(|| "cards taken by a GPU run".into()),
+                    ));
+                }
+                chosen = vec![plans[pick_card(&plans)].0];
+                &chosen
+            } else {
+                &gpus
             };
             let short: Vec<usize> = gpus
                 .iter()
@@ -1691,6 +2243,9 @@ impl Home {
                 .filter(|g| free(*g) < want(*g))
                 .collect();
             if short.is_empty() {
+                if registry::one_of(m) {
+                    registry::write_chat_gpu(&self.o.cfg, id, gpus[0]).map_err(|e| (500, e))?;
+                }
                 return Ok(());
             }
             let mut freed = false;
@@ -1749,6 +2304,9 @@ impl Home {
             let Ok(entry) = self.entry(id) else {
                 return Err((503, words));
             };
+            if let Some(why) = self.card_taken(gpu) {
+                return Err((503, why));
+            }
             let snap = self.snapshot();
             let want = room::card_free(&snap.cards, gpu) + short_mb + 256;
             let info = self.model_info(&entry);
@@ -1781,6 +2339,9 @@ impl Home {
         port: u16,
         gpu: usize,
     ) -> Result<(), (u16, String)> {
+        if let Some(why) = self.card_taken(gpu) {
+            return Err((503, why));
+        }
         // never more copies of a model on one card than its profile allows (max_copies_per_card)
         if let Ok(m) = self.entry(id) {
             let max = self.profile_of(&m).concurrency.max_copies_per_card as usize;
@@ -1801,7 +2362,7 @@ impl Home {
         // a model whose engine splits its stages over its cards (its card's split: true - MiniMax Music 3's language
         // model on one, its flow stage on the other) gets them all, `gpu` first
         let on = match self.entry(id) {
-            Ok(m) if m["split"] == true => {
+            Ok(m) if m["split"] == true || registry::spans(&m) => {
                 let mut v = vec![gpu];
                 v.extend(self.gpus_of(&m).into_iter().filter(|g| *g != gpu));
                 v.iter()
@@ -1811,6 +2372,18 @@ impl Home {
             }
             _ => gpu.to_string(),
         };
+        for g in registry::gpu_list(&on) {
+            if let Some(why) = self.card_taken(g) {
+                return Err((503, why));
+            }
+        }
+        let on_cards = registry::gpu_list(&on);
+        if on_cards.len() > 1 {
+            let entry = self.entry(id)?;
+            let cards = self.named_cards(&self.models());
+            let (need, _) = self.vouched_mb(&entry, &totals_of(&cards));
+            span_free_room(&cards, &on_cards, &need).map_err(|e| (503, e))?;
+        }
         let mut args = vec![
             kind.to_string(),
             "start".into(),
@@ -1862,6 +2435,13 @@ impl Home {
     }
 
     /// Seconds model `id` is held for from now (0: not held)
+    /// Explicit unload releases both current front-door hold representations.
+    pub(crate) fn end_hold(&self, id: &str) -> bool {
+        let reservation = self.holds.lock().unwrap().remove(id).is_some();
+        let keep = self.chat_keep.lock().unwrap().remove(id).is_some();
+        reservation || keep
+    }
+
     pub(crate) fn held_s(&self, id: &str) -> f64 {
         super::rsvp::left(self.holds.lock().unwrap().get(id), now())
     }
@@ -1873,6 +2453,10 @@ impl Home {
 
     /// A request on its way to the server on `port` (counted until the lease is dropped)
     fn lease(&self, port: u16) -> Lease<'_> {
+        self.lease_with_tracking(port, true)
+    }
+
+    fn lease_with_tracking(&self, port: u16, track_request: bool) -> Lease<'_> {
         *self.inflight.lock().unwrap().entry(port).or_insert(0) += 1;
         let model = self
             .answers
@@ -1881,12 +2465,18 @@ impl Home {
             .get(&port)
             .map(|a| a.0.clone())
             .filter(|m| !m.is_empty());
+        if track_request {
+            if let Some(id) = model.as_deref() {
+                self.ages.begin(&ages::port_key(port), id, now());
+            }
+        }
         let hold = model.zip(super::rsvp::granted(super::rsvp::asked(), self.max_rsvp()));
         Lease {
             target: Target::Tcp(format!("127.0.0.1:{port}")),
             port,
             home: self,
             hold,
+            track_request,
         }
     }
 
@@ -1894,6 +2484,7 @@ impl Home {
         let t0 = Instant::now();
         while t0.elapsed() < Duration::from_secs(600) {
             if self.server_at(port).is_some_and(|(m, l, _)| m == id && !l) {
+                self.ages.seen(&ages::port_key(port), id, now(), || None);
                 return Ok(());
             }
             std::thread::sleep(Duration::from_secs(1));
@@ -2049,18 +2640,21 @@ impl Home {
         }) else {
             return Ok(());
         };
-        let info = self.model_info(m);
-        let Some(&first) = info.gpus.first() else {
+        if let Some(why) = self.taken_for(m) {
+            return Err((503, why));
+        }
+        let mut info = self.model_info(m);
+        info.gpus.retain(|g| self.card_taken(*g).is_none());
+        if let Some(g) = b["gpu"].as_u64() {
+            if let Some(why) = self.card_taken(g as usize) {
+                return Err((503, why));
+            }
+        }
+
+        let Some(_) = info.gpus.first() else {
             return Ok(());
         };
-        let card_mb = self
-            .cards
-            .lock()
-            .unwrap()
-            .get(first)
-            .and_then(|c| c["vram_total_mb"].as_u64())
-            .unwrap_or(32768);
-        let (need, seen) = self.vouched_mb(m, card_mb);
+        let (need, seen) = self.vouched_mb(m, &totals_of(&self.cards.lock().unwrap()));
         let need = if seen { BTreeMap::new() } else { need };
         splace::room_for_video(
             &Sched(self),
@@ -2143,6 +2737,7 @@ impl Home {
             if tick % 3 != 0 {
                 continue;
             }
+            let _ = self.chat_idle_unload();
             let all = self.models();
             let enabled = video_enabled(&all);
             gone = if video_missing(&enabled, self.video_daemon().map(|d| d.0).as_deref()) {
@@ -2173,6 +2768,32 @@ impl Home {
                     tried.insert(id.clone(), Instant::now());
                     let _ = self.load_async(&id);
                 }
+            }
+        }
+    }
+
+    pub(crate) fn chat_idle_unload(&self) -> Option<String> {
+        if self.o.idle_minutes == 0 {
+            return None;
+        }
+        let id = self.chat_idle()?;
+        let t = now();
+        let (active, last) = self.chat_requests();
+        self.ages
+            .seen(ages::CHAT, &id, t, || self.chat_uptime().map(|u| t - u));
+        self.ages.last_was(ages::CHAT, last);
+        let age = self.ages.get(ages::CHAT)?;
+        if !chat_unload_due(&age, t, self.o.idle_minutes, active) {
+            return None;
+        }
+        match self.unload(&id) {
+            Ok(()) => {
+                self.ages.gone(ages::CHAT);
+                Some(id)
+            }
+            Err((_, e)) => {
+                eprintln!("{id}: the idle unload failed: {e}");
+                None
             }
         }
     }
@@ -2709,5 +3330,164 @@ mod tests {
         );
         assert_eq!(video_engines(&ids(&["ltx2"])), ("ltx2".to_string(), vec![]));
         assert_eq!(video_engines(&[]), (String::new(), vec![]));
+    }
+}
+
+#[cfg(test)]
+mod service_policy_tests {
+    use super::*;
+    #[test]
+    fn capacities_use_each_reported_card_and_never_an_assumed_size() {
+        let totals = totals_of(&json!([{"vram_total_mb":4096},{"vram_total_mb":16384}]));
+        assert_eq!(card_total(&totals, 0), Some(4096));
+        assert_eq!(card_total(&totals, 1), Some(16384));
+        assert_eq!(card_total(&totals, 9), Some(16384));
+        assert_eq!(card_total(&[], 0), None);
+        let m = json!({"kind":"audio","vram_gib":8});
+        let (v, _) = vouch(&m, &[0, 1], None, 0, &|g| card_total(&totals, g));
+        assert_eq!(v[&0], 4096 - MARGIN_MB - 512);
+        assert_eq!(v[&1], 8192);
+        let (v, _) = vouch(&m, &[0], None, 0, &|_| None);
+        assert_eq!(v[&0], 8192);
+    }
+    #[test]
+    fn one_of_memory_is_whole_on_each_candidate() {
+        let m = json!({"kind":"llm","gpus":"0|1"});
+        let seen = BTreeMap::from([(1, 6000)]);
+        let (v, measured) = vouch(&m, &[0, 1], Some(&seen), 10000, &|_| Some(16384));
+        assert!(measured);
+        assert_eq!(v[&0], 6000);
+        assert_eq!(v[&1], 6000);
+    }
+    #[test]
+    fn idle_only_chat_unload_preserves_busy_and_disabled_timer() {
+        let ages = ages::Ages::open(None);
+        let a = ages.seen("llm", "x", 0., || None);
+        assert!(chat_unload_due(&a, 61., 1, false));
+        assert!(!chat_unload_due(&a, 61., 1, true));
+        assert!(!chat_unload_due(&a, 61., 0, false));
+    }
+    #[test]
+    fn one_of_prefers_no_evictions() {
+        assert_eq!(pick_card(&[(0, None), (1, Some(vec![]))]), 1);
+        assert_eq!(pick_card(&[(0, None), (1, None)]), 0);
+    }
+}
+
+#[cfg(test)]
+mod reservation_contract_tests {
+    use super::*;
+    #[test]
+    fn one_of_avoids_a_reserved_card_but_span_requires_it() {
+        let t = crate::gpulock::Taken {
+            holder: crate::gpulock::Holder {
+                pid: 1,
+                cmd: "test".into(),
+            },
+            gpus: Some(vec![0]),
+        };
+        let choice = json!({"kind":"llm","gpus":"0|1"});
+        let span = json!({"kind":"llm","gpus":"0,1"});
+        assert!(!t.bars(&[0, 1], needs_all_cards(&choice)));
+        assert!(t.bars(&[0, 1], needs_all_cards(&span)));
+        let plans: Vec<_> = [(0, Some(vec![])), (1, Some(vec![]))]
+            .into_iter()
+            .filter(|(g, _)| !t.takes(*g))
+            .collect();
+        assert_eq!(plans[pick_card(&plans)].0, 1);
+    }
+}
+
+fn extend_age(row: &mut Value, values: Value) {
+    if let (Some(r), Some(v)) = (row.as_object_mut(), values.as_object()) {
+        r.extend(v.clone());
+    }
+}
+
+fn files_mb(m: &Value) -> u64 {
+    registry::paths(m)
+        .iter()
+        .filter(|p| p.is_file())
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|x| x.len() >> 20)
+        .sum()
+}
+#[cfg(test)]
+mod uncapped_capacity_tests {
+    use super::*;
+    #[test]
+    fn original_four_card_sizes_refuse_or_filter_before_any_load() {
+        let m = json!({"id":"test","kind":"audio","vram_gib":8});
+        let t = [4096, 8192, 12288, 24576];
+        assert!(cards_it_fits(&m, &[0], 0, &|g| Some(t[g])).is_err());
+        assert!(cards_it_fits(&m, &[1], 0, &|g| Some(t[g])).is_err());
+        assert_eq!(
+            cards_it_fits(&m, &[0, 1, 2, 3], 0, &|g| Some(t[g])).unwrap(),
+            vec![2, 3]
+        );
+        let streamed = json!({"id":"test","kind":"audio","vram_gib":8,"streams":true});
+        assert_eq!(
+            cards_it_fits(&streamed, &[0], 0, &|g| Some(t[g])).unwrap(),
+            vec![0]
+        );
+        let spanning = json!({"id":"test","kind":"audio","spans":true,"vram_gib_per_card":[8.,8.]});
+        assert!(cards_it_fits(&spanning, &[0, 2], 0, &|g| Some(t[g])).is_err());
+        assert_eq!(
+            cards_it_fits(&spanning, &[2, 3], 0, &|g| Some(t[g])).unwrap(),
+            vec![2, 3]
+        );
+        assert_eq!(
+            cards_it_fits(&m, &[0], 0, &|_| None).unwrap(),
+            vec![0],
+            "unknown capacity is not invented; room placement waits for real telemetry"
+        );
+    }
+}
+
+/// The current scheduler chooses a primary card; spanning launches must still fit every secondary now.
+fn span_free_room(cards: &Value, on: &[usize], need: &BTreeMap<usize, u64>) -> Result<(), String> {
+    for g in on {
+        let c = cards
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|c| c["index"].as_u64() == Some(*g as u64));
+        let free = c
+            .and_then(|c| {
+                Some(
+                    c["vram_total_mb"]
+                        .as_u64()?
+                        .saturating_sub(c["vram_used_mb"].as_u64()?),
+                )
+            })
+            .unwrap_or(0);
+        let want = need
+            .get(g)
+            .copied()
+            .unwrap_or(u64::MAX)
+            .saturating_add(MARGIN_MB);
+        if free < want {
+            return Err(format!("GPU {g}: spanning model needs {want} MiB free, {free} MiB reported; wait for room on every card"));
+        }
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod span_admission_tests {
+    use super::*;
+    #[test]
+    fn occupied_or_unknown_secondary_never_launches() {
+        let need = BTreeMap::from([(0, 4096), (1, 4096)]);
+        let mut cards = json!([{"index":0,"vram_total_mb":12288,"vram_used_mb":0},{"index":1,"vram_total_mb":12288,"vram_used_mb":11000}]);
+        assert!(span_free_room(&cards, &[0, 1], &need).is_err());
+        cards[1]["vram_used_mb"] = json!(0);
+        assert!(span_free_room(&cards, &[0, 1], &need).is_ok());
+        cards[1].as_object_mut().unwrap().remove("vram_used_mb");
+        assert!(span_free_room(&cards, &[0, 1], &need).is_err());
+    }
+    #[test]
+    fn huge_capacity_is_refused_without_overflow() {
+        let m = json!({"id":"huge","kind":"audio","vram_gib":1e300});
+        assert!(cards_it_fits(&m, &[0], 0, &|_| Some(4096)).is_err());
     }
 }

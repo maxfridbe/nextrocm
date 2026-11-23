@@ -113,6 +113,10 @@ fn load_engine<'g>(
     for (var, value) in crate::opt_env(&options(k), nextrocm_engine_core::At::Load, k.name)? {
         std::env::set_var(var, value);
     }
+    let on: Vec<usize> = gpus.iter().map(|g| g.index).collect();
+    for line in nextrocm_engine_core::apply_variant_settings(k.archs, &on, &options(k)).map_err(|e| e.0)? {
+        eprintln!("[{line}]");
+    }
     if let Some(mode) = selected_mode {
         o.expert_bytes = None; // Explicit policy is carried once, never conflicts.
         return nextrocm_llm_inkling2::adapter::load_with_prefill_policies(
@@ -722,6 +726,9 @@ fn launch_args(cfg: &Config, raw: &[String]) -> Result<Vec<String>, String> {
         }
         crate::drives::not_moving(cfg, id)?;
         flags.remove(0);
+        if opt(&flags, "--gpu").is_none() && nextrocm_serve::home::registry::one_of(&m) {
+            flags.extend(["--gpu".into(), crate::service::one_of_gpu(cfg, &m, id)?.to_string()]);
+        }
         for (flag, key) in [
             ("--model", "file"),
             ("--ctx", "ctx"),

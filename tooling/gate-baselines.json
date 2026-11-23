@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "policy": {"speed_regression_fraction": 0.03, "default_runs": 2},
+  "shared": {"crates/": ["*"], "glue/": ["*"], "kernels/ns/": ["*"], "kernels/ops/": ["*"], "kernels/diffusion/": ["*"], "kernels/build": ["*"], "cli/": ["*"], "tooling/": ["*"]},
+  "engines": {},
+  "scope": "No portable hardware baselines admitted yet. Empty or missing coverage is UNVALIDATED, never PASS. Existing private numerical receipts are not fabricated into regression baselines."
+}

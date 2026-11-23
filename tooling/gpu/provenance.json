@@ -1,0 +1,9 @@
+{
+  "source": "Reviewed WOPR audio watchdog and CPU process-group tests; retained original identities",
+  "original_sha256": {
+    "run_job.py": "064fdca5cab095cba71a8af2502c03aef344113e47ee764000f80a65ea3fea13",
+    "measure-process-memory.py": "8c9cdeff97571eb36d47ee70de773ee3a7d8bae6ff3680f4c5157adf145d0e2c",
+    "test_run_job.py": "b80e8e381cb3f6a1371a4a810aaf038512128cbc1b7cf5ed3e9ad6de652a32ef"
+  },
+  "changes": "Explicit positive device cap replaces fixed card cap; timeout bound 1800s; owned DRM PCI identities checked against selected device; optional expected pins compared with locked prelaunch hashes before Popen; tests pass their synthetic cap explicitly and reject changed identities before launch. Original process ownership, reserve, signal and cleanup flow retained. No service operations."
+}

@@ -109,6 +109,27 @@ impl Catalog {
                 return Err(format!("{}: files.{role} names {key}, which no card defines", p.display()));
             }
         }
+        // the inline annotations of each architecture (annotations.yml), on every card of it that has none of its own
+        let ann_path = dir.join("annotations.yml");
+        if let Ok(text) = std::fs::read_to_string(&ann_path) {
+            let by_arch: Value = serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", ann_path.display()))?;
+            for (arch, a) in by_arch.as_object().into_iter().flatten() {
+                let list = a.get("list").and_then(Value::as_array).ok_or_else(|| format!("{}: {arch}: no list", ann_path.display()))?;
+                for (i, x) in list.iter().enumerate() {
+                    for k in ["syntax", "does", "tested"] {
+                        if x.get(k).and_then(Value::as_str).is_none_or(str::is_empty) {
+                            return Err(format!("{}: {arch}: entry {i} has no {k}", ann_path.display()));
+                        }
+                    }
+                }
+                for m in models.iter_mut().filter(|m| s(m, "arch") == *arch && m.get("annotations").is_none()) {
+                    m["annotations"] = Value::Array(list.clone());
+                    if let Some(n) = a.get("note") {
+                        m["annotations_note"] = n.clone();
+                    }
+                }
+            }
+        }
         let mut ids = BTreeSet::new();
         for m in &models {
             if !ids.insert(s(m, "id")) {
@@ -126,7 +147,11 @@ impl Catalog {
         let card = [s(entry, "catalog"), s(entry, "id")].iter().find_map(|id| self.models.iter().filter(has).find(|m| !id.is_empty() && s(m, "id") == *id))
             .or_else(|| self.models.iter().filter(has).find(|m| s(m, "kind") == kind && s(m, "arch") == s(entry, "arch")))
             .or_else(|| self.models.iter().filter(has).find(|m| s(m, "kind") == kind))?;
-        std::fs::read_to_string(self.dir.join(s(card, "guide"))).ok()
+        let text = std::fs::read_to_string(self.dir.join(s(card, "guide"))).ok()?;
+        Some(match Self::annotations_md(card) {
+            Some(md) => text.trim_end().to_string() + &md,
+            None => text,
+        })
     }
 
     pub fn model(&self, id: &str) -> Option<&Value> {
@@ -144,6 +169,39 @@ impl Catalog {
                 }
             }
         }
+    }
+
+    /// Every entry's inline annotations from its card (the card is their one source: the server keeps their spans
+    /// through its speech text pass, the guide lists them, the platform shows them where the text is written)
+    pub fn fill_annotations(&self, entries: &mut [Value]) {
+        for e in entries.iter_mut() {
+            let Some(card) = self.model(&s(e, "catalog")) else { continue };
+            if let Some(a) = card.get("annotations") {
+                e["annotations"] = a.clone();
+            }
+            if let Some(n) = card.get("annotations_note") {
+                e["annotations_note"] = n.clone();
+            }
+            // an image model's request rules (schema 1, docs/models.md "Image controls"): the card's, also for an
+            // entry registered before cards carried them
+            if let Some(c) = card.get("controls") {
+                e["controls"] = c.clone();
+            }
+        }
+    }
+
+    /// A card's annotations as Markdown (the guide's last section): each syntax, what it does, how it was checked
+    pub fn annotations_md(card: &Value) -> Option<String> {
+        let list = card.get("annotations")?.as_array()?;
+        let mut md = String::from("\n\n## Inline annotations (what the text may carry)\n\n| write | what it does | checked |\n|---|---|---|\n");
+        for a in list {
+            let cell = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or("").replace('|', "\\|").replace('\n', " ");
+            md.push_str(&format!("| `{}` | {} | {} |\n", cell("syntax"), cell("does"), cell("tested")));
+        }
+        if let Some(n) = card.get("annotations_note").and_then(Value::as_str) {
+            md.push_str(&format!("\n{n}\n"));
+        }
+        Some(md)
     }
 
     /// A model's files: (role, key, the file's entry)
@@ -461,6 +519,9 @@ fn entry(m: &Value, paths: &BTreeMap<String, PathBuf>, local: &BTreeMap<String, 
         if m["silo"]["required"] == true {
             env.insert("NS_SILO_REQUIRED".into(), json!("1"));
         }
+        if let Some(v) = m["silo"]["variant"].as_str().filter(|v| !v.is_empty()) {
+            env.insert("NS_SILO_VARIANT".into(), json!(v));
+        }
     }
     let main = ["model", "transformer", "denoiser", "lora"].iter().find_map(|r| paths.get(*r)).or_else(|| paths.values().next());
     let files: Map<String, Value> = paths.iter().map(|(r, p)| (r.clone(), Value::String(p.to_string_lossy().into_owned()))).collect();
@@ -470,7 +531,7 @@ fn entry(m: &Value, paths: &BTreeMap<String, PathBuf>, local: &BTreeMap<String, 
         "files": files, "gpus": m.get("gpus").cloned().unwrap_or(json!("0")), "env": env, "enabled": true,
         "catalog": m["id"],
     });
-    for k in ["ctx", "tools", "tasks", "base", "defaults", "speech", "does", "silo", "vram_gib", "headroom_gib", "streams", "split", "concurrency", "coexistence"].iter().chain(LICENSE_KEYS) {
+    for k in ["ctx", "tools", "tasks", "base", "defaults", "speech", "annotations", "annotations_note", "controls", "does", "silo", "vram_gib", "headroom_gib", "streams", "split", "concurrency", "coexistence"].iter().chain(LICENSE_KEYS) {
         if let Some(v) = m.get(k) {
             e[k] = v.clone();
         }
@@ -538,6 +599,28 @@ mod tests {
 
     fn repo_cards() -> Catalog {
         Catalog::from_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../model-cards")).unwrap()
+    }
+
+    #[test]
+    fn generic_annotations_and_controls_survive_catalog_registry_and_guide() {
+        let dir=std::env::temp_dir().join(format!("nextrocm-metadata-{}",std::process::id()));
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        std::fs::create_dir_all(dir.join("image")).unwrap();
+        std::fs::write(dir.join("guide.md"),"Fixture guide.\n").unwrap();
+        std::fs::write(dir.join("audio/voice.yml"),"id: voice\nkind: audio\narch: fixture-voice\ntitle: Fixture\nguide: guide.md\n").unwrap();
+        std::fs::write(dir.join("image/picture.yml"),"id: picture\nkind: image\narch: fixture-picture\ntitle: Fixture\ncontrols:\n  version: 1\n  steps: {min: 1, max: 4, default: 2}\n  cfg: null\n  negative: false\n").unwrap();
+        std::fs::write(dir.join("annotations.yml"),"fixture-voice:\n  note: Synthetic metadata only; not a model quality claim.\n  list:\n    - syntax: '[fixture]'\n      does: fixture marker\n      tested: CPU metadata test\n      keep: 'fixture'\n").unwrap();
+        let cat=Catalog::from_dir(&dir).unwrap();
+        let voice=cat.model("voice").unwrap();assert_eq!(voice["annotations"][0]["syntax"],"[fixture]");
+        let e=entry(voice,&BTreeMap::new(),&BTreeMap::new());assert_eq!(e["annotations"],voice["annotations"]);
+        let mut entries=vec![json!({"id":"old","catalog":"voice","enabled":false,"pin":true}),json!({"id":"old-picture","catalog":"picture"})];
+        cat.fill_annotations(&mut entries);
+        assert_eq!(entries[0]["annotations"],voice["annotations"]);assert_eq!(entries[0]["enabled"],false);assert_eq!(entries[0]["pin"],true);
+        assert_eq!(entries[1]["controls"]["steps"]["default"],2);
+        let picture=cat.model("picture").unwrap();assert_eq!(entry(picture,&BTreeMap::new(),&BTreeMap::new())["controls"],picture["controls"]);
+        let guide=cat.guide(&json!({"catalog":"voice","kind":"audio"})).unwrap();assert!(guide.starts_with("Fixture guide.")&&guide.contains("[fixture]")&&guide.contains("CPU metadata test"));
+        std::fs::write(dir.join("annotations.yml"),"fixture-voice: {list: [{syntax: x, does: y}]}\n").unwrap();assert!(Catalog::from_dir(&dir).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -644,6 +727,9 @@ mod tests {
         assert_eq!(e(json!("b"))["env"], json!({"NS_SILO_NAME": "b"}));
         assert_eq!(e(json!("none"))["env"], json!({"NS_SILO": "0"}));
         assert_eq!(e(Value::Null)["env"], json!({}));
+        assert_eq!(e(json!({"variant":"wave64"}))["env"], json!({"NS_SILO_VARIANT":"wave64"}));
+        assert_eq!(e(json!({"variant":"none"}))["env"], json!({"NS_SILO_VARIANT":"none"}));
+        assert_eq!(e(json!({"variant":""}))["env"], json!({}));
     }
 
     #[test]

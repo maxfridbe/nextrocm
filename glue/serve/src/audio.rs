@@ -56,6 +56,8 @@ pub struct AudioServer {
     /// the built front ends (dist/wfe); none: no page
     pub wfe: Option<PathBuf>,
     pub cors: Vec<String>,
+    /// Inline markup declared by the card that normalization preserves.
+    pub keep: Vec<fancy_regex::Regex>,
     gpu: Arc<Gpu>,
     tele: Arc<Telemetry>,
     engine: Mutex<Box<dyn AudioEngine>>,
@@ -194,6 +196,7 @@ impl AudioServer {
             out_dir,
             wfe,
             cors,
+            keep: Vec::new(),
             gpu,
             tele,
             engine: Mutex::new(engine),
@@ -727,6 +730,11 @@ impl AudioServer {
         // stays the same voice); a script of several speakers, and a song, whole
         let mut whole = b.clone();
         whole["response_format"] = json!("wav");
+        // A streamed response consists of complete, non-streaming inner requests.
+        if let Some(o) = whole.as_object_mut() {
+            o.remove("stream");
+            o.remove("stream_format");
+        }
         let texts: Vec<String> = match &list {
             Some(t) => t.clone(),
             None => vec![["input", "text"]
@@ -992,7 +1000,7 @@ impl AudioServer {
             && b["normalize"] != false
             && !std::env::var("NS_SPEECH_NORMALIZE").is_ok_and(|v| v == "0")
         {
-            speakable(&prompt)
+            speakable_keeping(&prompt, &self.keep)
         } else {
             prompt
         };
@@ -1252,6 +1260,41 @@ pub fn own_vram_mb() -> u64 {
     kb / 1024
 }
 
+/// The `keep` patterns of a registry entry's annotations (a bad pattern is skipped, and said so)
+pub fn keep_patterns(entry: &Value) -> Vec<fancy_regex::Regex> {
+    entry["annotations"].as_array().into_iter().flatten().filter_map(|a| a["keep"].as_str()).filter(|k| !k.is_empty())
+        .filter_map(|k| fancy_regex::Regex::new(k).map_err(|e| eprintln!("annotation pattern {k:?}: {e}")).ok()).collect()
+}
+
+/// `speakable` with the model's own markup left as it is: each span a `keep` pattern matches stands aside (a
+/// private-use placeholder) while the rest is made speakable, then comes back
+pub fn speakable_keeping(text: &str, keep: &[fancy_regex::Regex]) -> String {
+    if keep.is_empty() {
+        return speakable(text);
+    }
+    let mut kept: Vec<String> = Vec::new();
+    let mut t = text.to_string();
+    for re in keep {
+        let mut out = String::new();
+        let mut at = 0;
+        for m in re.find_iter(&t.clone()).flatten() {
+            out.push_str(&t[at..m.start()]);
+            out.push(' ');
+            out.push(char::from_u32(0xF0000 + kept.len() as u32).unwrap_or(' '));
+            out.push(' ');
+            kept.push(m.as_str().to_string());
+            at = m.end();
+        }
+        out.push_str(&t[at..]);
+        t = out;
+    }
+    let mut said = speakable(&t);
+    for (i, k) in kept.iter().enumerate() {
+        said = said.replace(char::from_u32(0xF0000 + i as u32).unwrap_or(' '), k);
+    }
+    said
+}
+
 /// A text as it is to be said: math and code symbols as words (a model reads "Q·K^T / √d_k" as noise - a voice
 /// looped on one such line), markdown's marks out, dashes and brackets as pauses
 pub fn speakable(text: &str) -> String {
@@ -1360,6 +1403,18 @@ fn speakable_line(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_models_markup_is_kept_through_the_speech_text_pass() {
+        let keep = vec![fancy_regex::Regex::new(r"\[(?:pause(?: [0-9.]+s?)?|start|ipa [^\]]*|steer [^\]]*|/steer)\]").unwrap(),
+                        fancy_regex::Regex::new(r"\((?:laugh|sigh)\)").unwrap()];
+        let s = super::speakable_keeping("[start]It is 5% done.[pause 2] (laugh) [steer mood.valence=2]Good[/steer] (aside) a*b", &keep);
+        assert!(s.starts_with("[start]"), "{s}");
+        assert!(s.contains("[pause 2]") && s.contains("(laugh)") && s.contains("[steer mood.valence=2]") && s.contains("[/steer]"), "{s}");
+        assert!(s.contains("5 percent") && !s.contains("(aside)") && !s.contains('*'), "{s}");
+        assert_eq!(super::speakable_keeping("(aside)", &[]), super::speakable("(aside)"));
+    }
+
+
     #[test]
     fn speakable_says_symbols() {
         let s = super::speakable;
@@ -1608,6 +1663,16 @@ mod streamed {
             "pcm over HTTP: {} stretches of 0.8 s, first byte {first:?}, total {total:?}",
             s.len()
         );
+    }
+
+    #[test]
+    fn stream_true_streams() {
+        let (addr, said, _) = serve_stamped(Duration::from_millis(10));
+        let body = json!({"model": "tts-1", "input": TEXT, "voice": "alloy", "response_format": "pcm", "stream": true}).to_string();
+        let (raw, _, _, _) = post_from(&addr, &body, None);
+        let (head, pcm, closed) = dechunk(&raw);
+        assert!(head.starts_with("HTTP/1.1 200") && closed, "{head}");
+        assert!(!pcm.is_empty() && said.lock().unwrap().len() >= 2);
     }
 
     #[test]

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# The web front ends (H3's scheme): TSX on snabbdom, compiled offline - the TypeScript compiler and snabbdom are
-# vendored (vendor/), no node_modules, no network; node is only the build's. One app a kind (image/ - and ocr/, the page of an image model that reads -, audio/, video/);
-# (home/: the box at a glance, `nextcuda serve`); the result is dist/wfe/: each app's ES modules + index.html + style.css, the shared vendor/ and static/, which the
+# Web frontends: strict TypeScript/TSX compiled offline with vendored tooling.
+# The home, image, audio and model3d apps share vendor/ and static/ assets.
+# Node is a build dependency only; the Rust services serve dist/wfe/.
 # kind's server serves as they are (/ui/..., the page at /).
 #   ./build.sh [app...]    type-check + compile (default: every app)
 #   ./build.sh --check     also a page's smoke test against a running server (NS_WFE=http://host:port: an image or audio one)
-# video/ is the H3 studio's front end as it was (its server: nextcuda video serve).
+# Only the four frontends present in this port are built by default.
 set -euo pipefail
 cd "$(dirname "$0")"
 NODE="${NODE:-$(command -v node || echo "$HOME/.local/bin/node")}"
@@ -14,7 +14,7 @@ TSC="vendor/typescript/tsc.js"
 OUT=../dist/wfe
 check=0; apps=()
 for a in "$@"; do [ "$a" = "--check" ] && check=1 || apps+=("$a"); done
-[ ${#apps[@]} -eq 0 ] && apps=(home image ocr audio model3d video)
+[ ${#apps[@]} -eq 0 ] && apps=(home image audio model3d)
 mkdir -p "$OUT/vendor" "$OUT/static"
 rm -rf build
 for app in "${apps[@]}"; do

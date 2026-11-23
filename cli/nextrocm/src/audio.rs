@@ -178,6 +178,10 @@ fn options(m: &Value, args: &[String]) -> Result<nextrocm_audio::LoadOptions, St
     )? {
         settings.insert(var, v);
     }
+    // Variant defaults apply only below explicit options, environment, and model settings.
+    for line in nextrocm_engine_core::variant_settings_into(k.archs, &[], k.options, &mut settings).map_err(|e| e.0)? {
+        eprintln!("{line}");
+    }
     Ok(nextrocm_audio::LoadOptions { settings })
 }
 
@@ -784,6 +788,7 @@ fn serve_here(
     )?;
     srv.idle = crate::served::idle_exit(args)?;
     srv.license = nextrocm_serve::page::licence_of(m);
+    srv.keep = nextrocm_serve::audio::keep_patterns(m);
     Arc::new(srv).run(&addr)
 }
 

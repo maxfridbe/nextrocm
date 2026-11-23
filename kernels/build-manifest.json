@@ -1,0 +1,581 @@
+{
+  "version": 1,
+  "profiles": {
+    "gfx1035": {
+      "wave_size": 32,
+      "scope": "Existing public recipe arithmetic flags; build is not numerical admission."
+    },
+    "gfx803": {
+      "wave_size": 64,
+      "scope": "Compile portability profile; each architecture requires its own numerical gate. No automatic wave32 kernel fallback."
+    }
+  },
+  "units": [
+    {
+      "source": "kernels/vision/qwen3vl/qv.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNRQV_ORDERED_STRICT_TU=1"
+      ]
+    },
+    {
+      "source": "kernels/vision/qwen3vl/qv_ordered_strict.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNRQV_ORDERED_STRICT_TU=1",
+        "-ffp-contract=off",
+        "-fno-unsafe-math-optimizations",
+        "-fno-approx-func"
+      ]
+    },
+    {
+      "source": "kernels/vision/qwen3vl/qv_rms4096_strict.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off",
+        "-fno-unsafe-math-optimizations",
+        "-fno-approx-func"
+      ]
+    },
+    {
+      "source": "kernels/vision/qwen3vl/qv_attention_divide.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC"
+      ]
+    },
+    {
+      "source": "kernels/vision/qwen3vl/qv_attention_tree32.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC"
+      ]
+    },
+    {
+      "source": "kernels/vision/qwen3vl/qv_attention_source32.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off",
+        "-fno-fast-math",
+        "-fno-unsafe-math-optimizations",
+        "-fno-approx-func",
+        "-fdenormal-fp-math=ieee"
+      ]
+    },
+    {
+      "source": "kernels/vision/qwen3vl/qv_silu_source.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off",
+        "-fno-fast-math",
+        "-fno-unsafe-math-optimizations",
+        "-fno-approx-func",
+        "-fdenormal-fp-math=ieee"
+      ]
+    },
+    {
+      "source": "kernels/vision/qwen3vl/qv_attention_order32.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off",
+        "-fno-fast-math",
+        "-fno-unsafe-math-optimizations",
+        "-fno-approx-func",
+        "-fdenormal-fp-math=ieee"
+      ]
+    },
+    {
+      "source": "kernels/image/qwenimage21/tests/combined_packed_expanded_runtime.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off"
+      ]
+    },
+    {
+      "source": "kernels/image/qwenimage21/tests/dit_ops_runtime.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off"
+      ]
+    },
+    {
+      "source": "kernels/image/qwenimage21/tests/aux_runtime.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off"
+      ]
+    },
+    {
+      "source": "kernels/image/qwenimage21/tests/convert_runtime.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off"
+      ]
+    },
+    {
+      "source": "kernels/image/qwenimage21/tests/trajectory_runtime.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off"
+      ]
+    },
+    {
+      "source": "kernels/image/qwenimage21/tests/attention_runtime.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off"
+      ]
+    },
+    {
+      "source": "kernels/image/qwenimage21/tests/vae_conv64_runtime.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off"
+      ]
+    },
+    {
+      "source": "kernels/image/qwenimage21/tests/attention_1024_runtime.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off"
+      ]
+    },
+    {
+      "source": "kernels/image/qwenimage21/tests/attention_batched_runtime.hip",
+      "kind": "image",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-ffp-contract=off"
+      ]
+    },
+    {
+      "source": "kernels/audio/lowvram/ops.hip",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_LOWVRAM_WAVE_SIZE={wave_size}"
+      ]
+    },
+    {
+      "source": "kernels/llm/inkling2/quant_wave32_dispatch.hip",
+      "kind": "llm",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-Ikernels/ns",
+        "-ffp-contract=off",
+        "-fno-unsafe-math-optimizations",
+        "-fno-approx-func"
+      ]
+    },
+    {
+      "source": "kernels/llm/inkling2/primitives.hip",
+      "kind": "llm",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-Ikernels/ns",
+        "-ffp-contract=off",
+        "-fno-fast-math"
+      ]
+    },
+    {
+      "source": "kernels/llm/inkling2/state.hip",
+      "kind": "llm",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-Ikernels/ns",
+        "-ffp-contract=off"
+      ]
+    },
+    {
+      "source": "kernels/llm/inkling2/mix.hip",
+      "kind": "llm",
+      "flags": [
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-Ikernels/ns",
+        "-ffp-contract=off",
+        "-fno-unsafe-math-optimizations",
+        "-fno-approx-func"
+      ]
+    },
+    {
+      "source": "kernels/ns/ns.hip",
+      "kind": "shared",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/selftest.hip",
+      "kind": "shared",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/image/rembg/rb.hip",
+      "kind": "image",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/diffusion/vision.hip",
+      "kind": "shared",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/image/upscale/up.hip",
+      "kind": "image",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/image/sd15/sd15.hip",
+      "kind": "image",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/image/starvector/starvector.hip",
+      "kind": "image",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/llm/stablelm/stablelm.hip",
+      "kind": "llm",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/llm/qwen35/qwen35.hip",
+      "kind": "llm",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/llm/qwen35/batch.hip",
+      "kind": "llm",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/llm/qwen35/scalar_fast.hip",
+      "kind": "llm",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/llm/qwen3moe/qwen3moe.hip",
+      "kind": "llm",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/ops/speech.hip",
+      "kind": "shared",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/model3d/rignet/rignet.hip",
+      "kind": "model3d",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/audio/minimaxmusic3/mm3.hip",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/audio/qwen3tts/q3t.hip",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/audio/voxcpm2/vcp.hip",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/audio/whisper/whisper.hip",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/audio/lowvram/selftest.cpp",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/audio/lowvram/bridge.cpp",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/audio/lowvram/canary.cpp",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/audio/lowvram/whisper.cpp",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/audio/lowvram/qwen.cpp",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/audio/lowvram/gguf.cpp",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/audio/lowvram/bpe.cpp",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    },
+    {
+      "source": "kernels/audio/lowvram/wav.cpp",
+      "kind": "audio",
+      "flags": [
+        "-Ikernels/ns",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-DNR_STARVECTOR_FFN_SMALL_M=1"
+      ]
+    }
+  ],
+  "silos": [
+    {
+      "architecture": "stablelm",
+      "kind": "llm",
+      "scope": "Same existing source and arithmetic flags; host silo binding and GPU regression admission are separate gates.",
+      "exports": [
+        "nslm_embed",
+        "nslm_mv",
+        "nslm_norm",
+        "nslm_add",
+        "nslm_swiglu",
+        "nslm_rope",
+        "nslm_attn"
+      ],
+      "units": [
+        {
+          "source": "kernels/llm/stablelm/stablelm.hip",
+          "flags": [
+            "-Ikernels/ns",
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-DNR_STARVECTOR_FFN_SMALL_M=1"
+          ]
+        }
+      ],
+      "variants": []
+    }
+  ],
+  "provenance": {
+    "source_recipe": "docs/public-release/build-runtime.sh",
+    "source_recipe_sha256": "5795b3bb30ce7200a3d971e78428fea12601bb2ef529edd776198059e27c5144",
+    "extraction": "Exact 48 source paths and ordered per-translation-unit flags extracted from the tracked recipe; offload target selected by profile and lowvram wave-size variable represented by {wave_size}. StableLM silo reuses its existing source flags.",
+    "validation": "CPU source/plan tests only. New kind/silo HIP compilation, actual export audit and hardware numerical validation pending."
+  }
+}

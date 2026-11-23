@@ -1334,7 +1334,7 @@ mod tests {
         assert_eq!(ms.len(), 3);
         assert_eq!(ms[2].point, p("/var/mnt/2TB SSD"));
         assert_eq!(
-            mount_of(&p("/home/developer/models/a.gguf"), &ms)
+            mount_of(&p("/var/home/developer/models/a.gguf"), &ms)
                 .unwrap()
                 .point,
             p("/var/home")

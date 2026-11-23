@@ -24,6 +24,13 @@ int ns_gpu_count(void);
 int ns_gpu_name(int index, char* buf, size_t len);
 int ns_gpu_pci(int index, char* buf, size_t len);
 int ns_gpu_units(int index, int* units, int* mhz);
+/* Optional additive device properties; no context or allocation is created.
+ * Outputs must be nonnull, writable and disjoint. gfx receives the complete
+ * HIP gcnArchName (including feature suffixes), NUL terminated. Insufficient
+ * len or a query failure leaves all outputs unchanged. total is bytes;
+ * wave is the physical warpSize; integrated is 0 or 1. */
+int ns_gpu_props(int index, uint64_t* total, int* wave, int* integrated,
+                 char* gfx, size_t len);
 /* the compute capability of GPU `index` as one number: 86 (an RTX 3060), 120 (an RTX 5070) */
 int ns_gpu_cc(int index, int* cc);
 /* opens GPU `index`: its stream, its two copy streams */

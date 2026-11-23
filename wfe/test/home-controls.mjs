@@ -1,0 +1,57 @@
+// Offline VNode and mocked transport checks. Run after: bash wfe/build.sh home
+// node --experimental-default-type=module wfe/test/home-controls.mjs
+import assert from 'node:assert/strict';
+const timers=[]; const calls=[];
+globalThis.window=globalThis;
+globalThis.localStorage={getItem:()=>null,setItem:()=>{}};
+globalThis.location={protocol:'http:',hostname:'localhost'};
+globalThis.document={getElementById:()=>({})};
+globalThis.requestAnimationFrame=()=>0;
+globalThis.setTimeout=(fn,ms)=>{timers.push({fn,ms});return timers.length;};
+let confirmValue=false; let confirmations=[];
+globalThis.confirm=(text)=>{confirmations.push(text);return confirmValue;};
+const instance={gpu:0,gpus:[0,1],port:9001,busy:false,loaded_s_ago:60,idle_s:10,unload_in_s:30};
+const model={id:'demo',title:'Demo',kind:'image',state:'loaded',enabled:true,gpus:[0,1],instances:[instance],loaded_s_ago:60,idle_s:10,unload_in_s:30,pinned:true,held_s:30,vouch_mb:{0:400},headroom_mb:{},concurrency:{status:'unmeasured'},coexistence:{mode:'shared'},page:9001};
+const drive=(id)=>({id,disk:id,model:id,mount:'/models/'+id,folder:'/models/'+id,size:1e10,free:8e9,models_bytes:1e9,models:['demo'],margin:1e9,measuring:false,fstype:'ext4',rate_gb_s:1});
+const state={models:[model],cards:[{index:1,name:'AMD Test',pci:'00:00',vram_total_mb:4096,vram_used_mb:400,vouched_mb:400,busy_pct:0,procs:[{pid:10,model_id:'demo',port:'9001',vram_mb:300,program:'nextrocm'},{pid:11,model_id:'demo',port:'9999',vram_mb:100,program:'benchmark'}],vouched:[{model:'demo',kind:'image',state:'loaded',mb:400,counted:true,measured:true}]}],services:[],runs:[],pulls:[],available:[],idle_minutes:5,ports:{},drives:{drives:[drive('a'),drive('b')],models:{demo:{files:1,missing:0,bytes:1e9,drives:{a:1e9},streams:true,moving:false,move:{b:{need:1e9}}}},move:null,measuring:null}};
+let rpcAnswer={ok:false,error:{code:'busy',message:'model is busy',retryable:true}};
+globalThis.fetch=async(url,init)=>{calls.push({url,init});const value=url==='/api/state'?state:url==='/api/spec'?{token:'test-only-token',spec:{}}:url.startsWith('/rpc/')?rpcAnswer:{};return {ok:true,status:200,json:async()=>value,text:async()=>JSON.stringify(value)};};
+const main=await import('../../dist/wfe/home/src/main.js');
+const {App}=await import('../../dist/wfe/home/src/components/App.js');
+const {agesText,unloadText,dur}=await import('../../dist/wfe/home/src/ages.js');
+await new Promise(setImmediate);
+assert.equal(agesText({},4),'');
+assert.equal(agesText({loaded_s_ago:60,idle_s:null},2),'loaded 1 min ago · no request yet');
+assert.equal(agesText({loaded_s_ago:60,idle_s:0,busy:true},5),'loaded 1 min ago · in use now');
+assert.equal(agesText({loaded_s_ago:1,idle_s:0,busy:false},5),'loaded 6 s ago · last request 5 s ago');
+assert.equal(unloadText({unload_in_s:2},3),'unloads now');
+assert.equal(unloadText({},3),''); assert.equal(dur(-1),'0 s');
+main.ui.state=state; main.ui.stateAt=Date.now();
+const nodes=(n)=>[n,...(n?.children??[]).flatMap(nodes)].filter(x=>x&&typeof x==='object');
+const text=(n)=>typeof n==='string'?n:(n?.text??'')+(n?.children??[]).map(text).join('');
+const unload=()=>nodes(App()).filter(n=>n.data?.attrs?.['aria-label']?.startsWith('unload '));
+assert.equal(unload().length,1,'one served copy, no unload on unrelated benchmark');
+assert.equal(unload()[0].data.attrs['aria-label'],'unload demo from GPU 1','spanning copy targets clicked GPU');
+const before=calls.filter(c=>c.init?.method==='POST').length;
+assert.equal(before,0,'render/poll performs no mutation');
+unload()[0].data.on.click(); await new Promise(setImmediate);
+const request=calls.find(c=>c.url==='/rpc/system.unload');
+assert.deepEqual(JSON.parse(request.init.body),{model:'demo',force_when_idle:true,gpu:1});
+assert.equal(request.init.headers.authorization,'Bearer test-only-token');
+assert.equal(main.ui.unloading['demo@1'].bad,true);assert.equal(main.ui.unloading['demo@1'].said,'model is busy');
+assert.equal(model.pinned,true,'rejected request does not optimistically mutate model');
+rpcAnswer={ok:true,result:{was_loaded:true,unpinned:true,hold_ended:true}};
+unload()[0].data.on.click();await new Promise(setImmediate);
+assert.equal(main.ui.unloading['demo@1'].said,'unloaded (unpinned, its hold ended)');
+assert.equal(main.ui.unloading['demo@1'].bad,false);
+// A rendered move needs confirmation; cancel means no action request.
+let button=nodes(App()).find(n=>n.sel?.startsWith('button')&&n.data?.attrs?.title?.startsWith('move its files'));
+assert.ok(button);const n=calls.length;button.data.on.click();await new Promise(setImmediate);assert.equal(calls.length,n);assert.equal(confirmations.length,1);
+confirmValue=true;button.data.on.click();await new Promise(setImmediate);
+assert.ok(calls.some(c=>c.url==='/api/action'&&JSON.parse(c.init.body).do==='move'));
+assert.ok(text(App()).includes('Drives'));assert.ok(text(App()).includes('last request'));
+// Servers without optional age/instance fields remain renderable and get no unsafe copy control.
+main.ui.state={...state,models:[{...model,instances:undefined,loaded_s_ago:undefined,idle_s:undefined}]};
+assert.equal(unload().length,0);assert.doesNotThrow(App);
+assert.ok(timers.some(t=>t.ms===1000),'relative clocks refresh between polls');
+console.log('PASS: clocks, copy/port targeting, busy/success RPC, explicit drive confirmation, older state, no on-load mutations');

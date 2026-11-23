@@ -49,7 +49,7 @@ impl Cx {
         self.req
             .host
             .as_deref()
-            .map(|h| format!("http://{h}"))
+            .map(|h| format!("{}://{h}", if self.s.is_tls() { "https" } else { "http" }))
             .unwrap_or_default()
     }
 

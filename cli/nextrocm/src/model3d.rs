@@ -124,6 +124,10 @@ fn options(m: &Value, args: &[String]) -> Result<nextrocm_model3d::LoadOptions, 
     for (var, v) in super::opt_env(k.options, nextrocm_engine_core::At::Load, k.name)? {
         settings.insert(var, v);
     }
+    // Variant defaults apply only below explicit options, environment, and model settings.
+    for line in nextrocm_engine_core::variant_settings_into(k.archs, &[], k.options, &mut settings).map_err(|e| e.0)? {
+        eprintln!("{line}");
+    }
     Ok(nextrocm_model3d::LoadOptions { settings })
 }
 

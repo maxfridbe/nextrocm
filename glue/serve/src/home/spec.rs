@@ -145,25 +145,316 @@ const VOICE: &str = r#"{"type": "object", "properties": {"name": {"type": "strin
   "models": {"type": "array", "items": {"type": "string"}, "description": "voices.list: the enabled models that speak it"},
   "problem": {"type": "string", "description": "voices.list, not ready: why"}}}"#;
 
-const MODEL_STATE: &str = r#"{"type": "object", "properties": {"id": {"type": "string"}, "kind": {"type": "string", "enum": ["llm", "image", "audio", "video"]},
-  "title": {"type": "string"}, "arch": {"type": "string"}, "enabled": {"type": "boolean"}, "held_s": {"type": "number", "description": "seconds a request's rsvp_s still holds it loaded (0: not held)"},
-  "concurrency": {"type": "object", "description": "from its model card: how many copies run on one card and are worth running. status unmeasured: the defaults (1 copy), nothing measured yet", "properties": {"max_copies_per_card": {"type": "integer"}, "recommended_copies": {"type": "integer"}, "scaling": {"type": "object", "nullable": true, "additionalProperties": {"type": "number"}, "description": "copies -> total throughput relative to one copy"}, "measured": {"type": "object", "nullable": true, "additionalProperties": true}, "status": {"type": "string", "enum": ["measured", "unmeasured"]}}},
-  "coexistence": {"type": "object", "description": "from its model card: whether other models may run on its card", "properties": {"mode": {"type": "string", "enum": ["shared", "exclusive"]}, "shared_with": {"type": "array", "items": {"type": "string"}, "description": "kind:<kind> / model:<id> it may run beside (empty: anything that fits)"}, "exclusive_reason": {"type": "string"}, "peak_extra_gib": {"type": "number", "nullable": true}}},
-  "copies_now": {"type": "integer", "description": "copies of it loaded now"}, "recommended_copies": {"type": "integer"}, "max_copies_per_card": {"type": "integer"}, "pinned": {"type": "boolean", "description": "pinned (system.pin): kept loaded, never unloaded for idleness or stopped for another model's room"}, "gpus": {"type": "array", "items": {"type": "integer"}},
-  "state": {"type": "string", "enum": ["disabled", "unloaded", "loading", "loaded", "busy", "ready", "not_downloaded"], "description": "busy: an image or audio model answering; ready: a video model the daemon has, not loaded; not_downloaded: a card's model not here (system.models.pull)"},
-  "downloaded": {"type": "boolean", "description": "false: a model a card offers that is not downloaded (enabled false; bytes, drive, folder, fits, pull say what fetching it takes)"},
-  "bytes": {"type": "integer", "description": "not downloaded: its files' bytes"}, "fits": {"type": "boolean", "description": "not downloaded: the folder it would go to has the room"},
-  "drive": {"type": "string"}, "folder": {"type": "string"}, "free": {"type": "integer"},
-  "pull": {"description": "not downloaded: its download under way (as system.models.pulls lists it), else null"},
-  "vouch_mb": {"type": "object", "additionalProperties": {"type": "integer"}, "description": "VRAM it is counted for, by card"},
-  "spans": {"type": "boolean", "description": "a chat model spread over every card (its model card: gpus all): its cards are not a choice"},
-  "measured": {"type": "boolean"}, "headroom_mb": {"type": "object", "additionalProperties": {"type": "integer"}}, "headroom_given": {"type": "boolean"},
-  "license": {"type": "string", "description": "the licence of its weights (an SPDX-style id or a short name)"},
-  "commercial": {"type": "boolean", "description": "false: the licence forbids commercial use (the pages tag the model non-commercial)"},
-  "license_note": {"type": "string", "description": "the conditions the licence puts on commercial use (territories, user or revenue limits, a notice to show)"},
-  "page": {"type": "integer", "description": "the port of its own page"},
-  "capabilities": {"type": "array", "items": {"type": "string"}, "description": "what it does, in neutral words: chat, stream, tools; generate, edit, compose, img2img, loras, few_step; ocr, read_pages, pdf; song, lyrics, instrumental; speech, builtin_voices, clone, saved_voices, continue_from, voice_design, voice_direction, vocal_events; text_to_video, image_to_video, sound, chain, first_last_frame, voice_reference, controlnet, inpaint, reference_images, reference_videos"},
-  "methods": {"type": "array", "items": {"type": "string"}, "description": "the /rpc methods that take it as model"}}}"#;
+const MODEL_STATE: &str = r#"{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "llm",
+        "image",
+        "audio",
+        "video"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "arch": {
+      "type": "string"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "held_s": {
+      "type": "number",
+      "description": "seconds a request's rsvp_s still holds it loaded (0: not held)"
+    },
+    "concurrency": {
+      "type": "object",
+      "description": "from its model card: how many copies run on one card and are worth running. status unmeasured: the defaults (1 copy), nothing measured yet",
+      "properties": {
+        "max_copies_per_card": {
+          "type": "integer"
+        },
+        "recommended_copies": {
+          "type": "integer"
+        },
+        "scaling": {
+          "type": "object",
+          "nullable": true,
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "copies -> total throughput relative to one copy"
+        },
+        "measured": {
+          "type": "object",
+          "nullable": true,
+          "additionalProperties": true
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "measured",
+            "unmeasured"
+          ]
+        }
+      }
+    },
+    "coexistence": {
+      "type": "object",
+      "description": "from its model card: whether other models may run on its card",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "shared",
+            "exclusive"
+          ]
+        },
+        "shared_with": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "kind:<kind> / model:<id> it may run beside (empty: anything that fits)"
+        },
+        "exclusive_reason": {
+          "type": "string"
+        },
+        "peak_extra_gib": {
+          "type": "number",
+          "nullable": true
+        }
+      }
+    },
+    "copies_now": {
+      "type": "integer",
+      "description": "copies of it loaded now"
+    },
+    "recommended_copies": {
+      "type": "integer"
+    },
+    "max_copies_per_card": {
+      "type": "integer"
+    },
+    "pinned": {
+      "type": "boolean",
+      "description": "pinned (system.pin): kept loaded, never unloaded for idleness or stopped for another model's room"
+    },
+    "gpus": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "unloaded",
+        "loading",
+        "loaded",
+        "busy",
+        "ready",
+        "not_downloaded"
+      ],
+      "description": "busy: an image or audio model answering; ready: a video model the daemon has, not loaded; not_downloaded: a card's model not here (system.models.pull)"
+    },
+    "downloaded": {
+      "type": "boolean",
+      "description": "false: a model a card offers that is not downloaded (enabled false; bytes, drive, folder, fits, pull say what fetching it takes)"
+    },
+    "bytes": {
+      "type": "integer",
+      "description": "not downloaded: its files' bytes"
+    },
+    "fits": {
+      "type": "boolean",
+      "description": "not downloaded: the folder it would go to has the room"
+    },
+    "drive": {
+      "type": "string"
+    },
+    "folder": {
+      "type": "string"
+    },
+    "free": {
+      "type": "integer"
+    },
+    "pull": {
+      "description": "not downloaded: its download under way (as system.models.pulls lists it), else null"
+    },
+    "vouch_mb": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "description": "VRAM it is counted for, by card"
+    },
+    "spans": {
+      "type": "boolean",
+      "description": "a chat model spread over every card (its model card: gpus all): its cards are not a choice"
+    },
+    "measured": {
+      "type": "boolean"
+    },
+    "headroom_mb": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "headroom_given": {
+      "type": "boolean"
+    },
+    "license": {
+      "type": "string",
+      "description": "the licence of its weights (an SPDX-style id or a short name)"
+    },
+    "commercial": {
+      "type": "boolean",
+      "description": "false: the licence forbids commercial use (the pages tag the model non-commercial)"
+    },
+    "license_note": {
+      "type": "string",
+      "description": "the conditions the licence puts on commercial use (territories, user or revenue limits, a notice to show)"
+    },
+    "page": {
+      "type": "integer",
+      "description": "the port of its own page"
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "what it does, in neutral words: chat, stream, tools; generate, edit, compose, img2img, loras, few_step; ocr, read_pages, pdf; song, lyrics, instrumental; speech, builtin_voices, clone, saved_voices, continue_from, voice_design, voice_direction, vocal_events; text_to_video, image_to_video, sound, chain, first_last_frame, voice_reference, controlnet, inpaint, reference_images, reference_videos"
+    },
+    "methods": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "the /rpc methods that take it as model"
+    },
+    "loaded_at": {
+      "type": "number",
+      "nullable": true,
+      "description": "UTC, Unix seconds: when its longest-loaded copy finished loading (null: not loaded)"
+    },
+    "last_request_at": {
+      "type": "number",
+      "nullable": true,
+      "description": "UTC, Unix seconds: the last moment a request was on any copy - now while one runs, else when the last one ended (null: no request since it loaded)"
+    },
+    "loaded_s_ago": {
+      "type": "integer",
+      "nullable": true,
+      "description": "seconds since loaded_at, as of this answer"
+    },
+    "idle_s": {
+      "type": "integer",
+      "nullable": true,
+      "description": "seconds since last_request_at, as of this answer (0 while a request runs; null: no request since it loaded)"
+    },
+    "unload_in_s": {
+      "type": "integer",
+      "nullable": true,
+      "description": "seconds until its first copy unloads for idleness (null: none does - pinned, held, busy, idle unload off, a chat model)"
+    },
+    "instances": {
+      "type": "array",
+      "description": "its loaded copies (empty: not loaded)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "gpu": {
+            "type": "integer",
+            "nullable": true
+          },
+          "gpus": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "a chat model: every card it spans"
+          },
+          "port": {
+            "type": "integer",
+            "nullable": true,
+            "description": "its server's port (null: a video worker)"
+          },
+          "busy": {
+            "type": "boolean",
+            "description": "a request runs on it"
+          },
+          "loaded_at": {
+            "type": "number",
+            "nullable": true,
+            "description": "UTC, Unix seconds: when it finished loading (null: not loaded)"
+          },
+          "last_request_at": {
+            "type": "number",
+            "nullable": true,
+            "description": "UTC, Unix seconds: the last moment a request was on it - now while one runs, else when the last one ended (null: no request since it loaded)"
+          },
+          "loaded_s_ago": {
+            "type": "integer",
+            "nullable": true,
+            "description": "seconds since loaded_at, as of this answer"
+          },
+          "idle_s": {
+            "type": "integer",
+            "nullable": true,
+            "description": "seconds since last_request_at, as of this answer (0 while a request runs; null: no request since it loaded)"
+          },
+          "unload_in_s": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      }
+    },
+    "gpus_one_of": {
+      "type": "boolean",
+      "description": "gpus is a choice of one card, not a span"
+    },
+    "annotations": {
+      "type": "array",
+      "description": "what its text may carry inline (speech and songs): syntax, what it does (does), how it was checked (tested), and the pattern the speech text pass keeps as it is (keep)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "syntax": {
+            "type": "string"
+          },
+          "does": {
+            "type": "string"
+          },
+          "tested": {
+            "type": "string"
+          },
+          "keep": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "annotations_note": {
+      "type": "string",
+      "description": "what else to know about the text it takes (what is read aloud, what is dropped)"
+    },
+    "controls": {
+      "type": "object",
+      "description": "a picture-making image model's request rules, schema version 1 (docs/models.md: Image controls): version, steps {min, max, default} (min = max: fixed), cfg {min, max, default} or null (no guidance), negative, size {min_side, max_side, multiple, max_pixels, default, sizes, presets}, seed, n, loras, edit {images, mask, strength, reference, strength_with_reference} or null (text to image only), transparent, sampler {values, default}, shift {min, max, default}, options [{name, type, min, max, default, help}], note"
+    }
+  }
+}"#;
 
 /// video.status (and video.wait)
 fn status() -> String {
@@ -218,32 +509,373 @@ pub fn result(method: &str) -> Option<String> {
   "reason": {"type": "string", "nullable": true, "description": "the maintenance notice's words; null when it is not in maintenance"},
   "retry_after_s": {"type": "integer", "nullable": true, "description": "when to ask again (the notice's end, else 15 minutes)"},
   "version": {"type": "string"}, "api": {"type": "integer"}, "at": {"type": "number", "description": "the box's clock, unix seconds"}}}"#.into(),
-        "system.busy" => r#"{"type": "object", "required": ["busy"], "properties": {
-  "busy": {"type": "boolean", "description": "anything below is true or non-empty"},
-  "reasons": {"type": "array", "items": {"type": "string"}, "description": "what is working, in words"},
-  "loading": {"type": "array", "items": {"type": "string"}, "description": "models loading"},
-  "working": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "kind": {"type": "string"}}}, "description": "picture and sound models answering a request"},
-  "llm": {"type": "object", "properties": {"active": {"type": "integer", "description": "chat requests being answered"}}},
-  "engines": {"type": "array", "description": "each enabled model's copies now against its concurrency profile, for a dispatcher", "items": {"type": "object", "properties": {"id": {"type": "string"}, "kind": {"type": "string"}, "copies_now": {"type": "integer"}, "recommended_copies": {"type": "integer"}, "max_copies_per_card": {"type": "integer"}, "mode": {"type": "string", "enum": ["shared", "exclusive"]}, "status": {"type": "string", "enum": ["measured", "unmeasured"]}}}},
-  "jobs": {"type": "array", "description": "image and audio jobs not ended (held ones too; they are no reason for busy)", "items": {"type": "object", "properties": {"id": {"type": "string"}, "kind": {"type": "string"}, "label": {"type": "string"}, "title": {"type": "string", "nullable": true, "description": "what people call this job: free text, 120 characters, never matched on"}, "state": {"type": "string"}, "held": {"type": "boolean"}}}},
-  "video": {"type": "object", "nullable": true, "description": "null: no video model enabled", "properties": {
-    "running": {"type": "boolean"}, "label": {"type": "string", "nullable": true}, "title": {"type": "string", "nullable": true, "description": "what people call this job: free text, 120 characters, never matched on"}, "name": {"type": "string", "nullable": true},
-    "stage": {"type": "string", "nullable": true}, "pct": {"type": "integer", "nullable": true}, "eta_s": {"type": "integer", "nullable": true}, "elapsed_s": {"type": "integer", "nullable": true},
-    "gpu": {"type": "integer", "nullable": true, "description": "the card the clip is made on (null when nothing runs, or while the clip waits for a card the engine has not given it yet)"}, "energy_wh": {"type": "number", "nullable": true, "description": "the clip's energy so far"},
-    "queued": {"type": "integer"}, "runnable": {"type": "integer", "description": "queued and not held"}, "held": {"type": "integer"},
-    "accepts": {"type": "boolean", "description": "video.generate without queue: true starts at once"},
-    "slots": {"type": "integer", "description": "clips made at once: 1. The studio makes one clip at a time; the daemon has a worker on each card (cards, and the video rows of the slots list) and the clip goes to whichever is free, so two video rows never mean two clips"},
-    "cards": {"type": "integer", "description": "cards the video daemon can make a clip on"}}},
-  "slots": {"type": "array", "description": "every place work runs: image and audio servers (two each: one per card), the video daemon's cards, the chat server", "items": {"type": "object", "properties": {
-    "kind": {"type": "string", "enum": ["image", "audio", "video", "llm"]}, "slot": {}, "port": {"type": "integer"}, "gpu": {"type": "integer", "nullable": true, "description": "its card (null: not running)"},
-    "gpus": {"type": "array", "items": {"type": "integer"}, "description": "llm: every card it spans"}, "model": {"type": "string", "nullable": true},
-    "up": {"type": "boolean", "description": "a server or engine holds a model there"}, "loading": {"type": "boolean"}, "busy": {"type": "boolean"}}}},
-  "cards": {"type": "array", "description": "each GPU and the work on it", "items": {"type": "object", "properties": {
-    "gpu": {"type": "integer"}, "name": {"type": "string"}, "vram_total_mb": {"type": "integer"}, "vram_used_mb": {"type": "integer"}, "busy_pct": {"type": "number"}, "power_w": {"type": "number"},
-    "models": {"type": "array", "items": {"type": "string"}, "description": "registered models whose processes hold memory there"}, "busy": {"type": "boolean"},
-    "work": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string"}, "model": {"type": "string", "nullable": true}, "job_title": {"type": "string", "nullable": true, "description": "the title of the job it is making, when known"}, "job_label": {"type": "string", "nullable": true, "description": "the label of the job it is making, when known"}}}}}}},
-  "parallel": {"type": "object", "description": "how many image / audio jobs run at the same time. Jobs of one model run side by side up to models[id]: a copy of the model a card it is enabled on, at most servers. The first copy takes the first job; a second job finds it busy and starts a second copy on the other card when that card has the room (else it waits for the first). So a long book can submit two audio.speak at once (wait: false) and keep both busy. Jobs of two different models run side by side when each has a server", "properties": {
-    "image": {"type": "object", "properties": {"servers": {"type": "integer", "description": "the kind's servers (2)"}, "models": {"type": "object", "additionalProperties": {"type": "integer"}, "description": "enabled model id: its jobs that run at once"}}}, "audio": {"type": "object", "properties": {"servers": {"type": "integer", "description": "the kind's servers (2)"}, "models": {"type": "object", "additionalProperties": {"type": "integer"}, "description": "enabled model id: its jobs that run at once"}}}}}}}"#.into(),
+        "system.busy" => r#"{
+  "type": "object",
+  "required": [
+    "busy"
+  ],
+  "properties": {
+    "cards_taken": {
+      "type": "string",
+      "nullable": true,
+      "description": "a GPU run holds every card"
+    },
+    "cards_taken_gpus": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "busy": {
+      "type": "boolean",
+      "description": "anything below is true or non-empty"
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "what is working, in words"
+    },
+    "loading": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "models loading"
+    },
+    "working": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "picture and sound models answering a request"
+    },
+    "llm": {
+      "type": "object",
+      "properties": {
+        "active": {
+          "type": "integer",
+          "description": "chat requests being answered"
+        }
+      }
+    },
+    "engines": {
+      "type": "array",
+      "description": "each enabled model's copies now against its concurrency profile, for a dispatcher",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "copies_now": {
+            "type": "integer"
+          },
+          "recommended_copies": {
+            "type": "integer"
+          },
+          "max_copies_per_card": {
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "shared",
+              "exclusive"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "measured",
+              "unmeasured"
+            ]
+          }
+        }
+      }
+    },
+    "jobs": {
+      "type": "array",
+      "description": "image and audio jobs not ended (held ones too; they are no reason for busy)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "nullable": true,
+            "description": "what people call this job: free text, 120 characters, never matched on"
+          },
+          "state": {
+            "type": "string"
+          },
+          "held": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "video": {
+      "type": "object",
+      "nullable": true,
+      "description": "null: no video model enabled",
+      "properties": {
+        "running": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string",
+          "nullable": true
+        },
+        "title": {
+          "type": "string",
+          "nullable": true,
+          "description": "what people call this job: free text, 120 characters, never matched on"
+        },
+        "name": {
+          "type": "string",
+          "nullable": true
+        },
+        "stage": {
+          "type": "string",
+          "nullable": true
+        },
+        "pct": {
+          "type": "integer",
+          "nullable": true
+        },
+        "eta_s": {
+          "type": "integer",
+          "nullable": true
+        },
+        "elapsed_s": {
+          "type": "integer",
+          "nullable": true
+        },
+        "gpu": {
+          "type": "integer",
+          "nullable": true,
+          "description": "the card the clip is made on (null when nothing runs, or while the clip waits for a card the engine has not given it yet)"
+        },
+        "energy_wh": {
+          "type": "number",
+          "nullable": true,
+          "description": "the clip's energy so far"
+        },
+        "queued": {
+          "type": "integer"
+        },
+        "runnable": {
+          "type": "integer",
+          "description": "queued and not held"
+        },
+        "held": {
+          "type": "integer"
+        },
+        "accepts": {
+          "type": "boolean",
+          "description": "video.generate without queue: true starts at once"
+        },
+        "slots": {
+          "type": "integer",
+          "description": "clips made at once: 1. The studio makes one clip at a time; the daemon has a worker on each card (cards, and the video rows of the slots list) and the clip goes to whichever is free, so two video rows never mean two clips"
+        },
+        "cards": {
+          "type": "integer",
+          "description": "cards the video daemon can make a clip on"
+        }
+      }
+    },
+    "slots": {
+      "type": "array",
+      "description": "every place work runs: image and audio servers (two each: one per card), the video daemon's cards, the chat server",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "image",
+              "audio",
+              "video",
+              "llm"
+            ]
+          },
+          "slot": {},
+          "port": {
+            "type": "integer"
+          },
+          "gpu": {
+            "type": "integer",
+            "nullable": true,
+            "description": "its card (null: not running)"
+          },
+          "gpus": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "llm: every card it spans"
+          },
+          "model": {
+            "type": "string",
+            "nullable": true
+          },
+          "up": {
+            "type": "boolean",
+            "description": "a server or engine holds a model there"
+          },
+          "loading": {
+            "type": "boolean"
+          },
+          "busy": {
+            "type": "boolean"
+          },
+          "loaded_at": {
+            "type": "number",
+            "nullable": true,
+            "description": "UTC, Unix seconds: when it finished loading (null: not loaded)"
+          },
+          "last_request_at": {
+            "type": "number",
+            "nullable": true,
+            "description": "UTC, Unix seconds: the last moment a request was on it - now while one runs, else when the last one ended (null: no request since it loaded)"
+          },
+          "loaded_s_ago": {
+            "type": "integer",
+            "nullable": true,
+            "description": "seconds since loaded_at, as of this answer"
+          },
+          "idle_s": {
+            "type": "integer",
+            "nullable": true,
+            "description": "seconds since last_request_at, as of this answer (0 while a request runs; null: no request since it loaded)"
+          }
+        }
+      }
+    },
+    "cards": {
+      "type": "array",
+      "description": "each GPU and the work on it",
+      "items": {
+        "type": "object",
+        "properties": {
+          "gpu": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "vram_total_mb": {
+            "type": "integer"
+          },
+          "vram_used_mb": {
+            "type": "integer"
+          },
+          "busy_pct": {
+            "type": "number"
+          },
+          "power_w": {
+            "type": "number"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "registered models whose processes hold memory there"
+          },
+          "busy": {
+            "type": "boolean"
+          },
+          "work": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "job_title": {
+                  "type": "string",
+                  "nullable": true,
+                  "description": "the title of the job it is making, when known"
+                },
+                "job_label": {
+                  "type": "string",
+                  "nullable": true,
+                  "description": "the label of the job it is making, when known"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "parallel": {
+      "type": "object",
+      "description": "how many image / audio jobs run at the same time. Jobs of one model run side by side up to models[id]: a copy of the model a card it is enabled on, at most servers. The first copy takes the first job; a second job finds it busy and starts a second copy on the other card when that card has the room (else it waits for the first). So a long book can submit two audio.speak at once (wait: false) and keep both busy. Jobs of two different models run side by side when each has a server",
+      "properties": {
+        "image": {
+          "type": "object",
+          "properties": {
+            "servers": {
+              "type": "integer",
+              "description": "the kind's servers (2)"
+            },
+            "models": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "description": "enabled model id: its jobs that run at once"
+            }
+          }
+        },
+        "audio": {
+          "type": "object",
+          "properties": {
+            "servers": {
+              "type": "integer",
+              "description": "the kind's servers (2)"
+            },
+            "models": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "description": "enabled model id: its jobs that run at once"
+            }
+          }
+        }
+      }
+    }
+  }
+}"#.into(),
         "system.version" => r#"{"type": "object", "properties": {"version": {"type": "string", "description": "the release (yy.mmdd.###)"}, "api": {"type": "integer", "description": "raised when an answer changes incompatibly"},
   "kinds": {"type": "array", "items": {"type": "string"}, "description": "kinds with an enabled model"}, "features": {"type": "array", "items": {"type": "string"}, "description": "what this build does (names stay; new ones are added)"},
   "methods": {"type": "array", "items": {"type": "string"}, "description": "the methods callable now"}}}"#.into(),
@@ -273,7 +905,7 @@ pub fn result(method: &str) -> Option<String> {
         "system.gpus" => r#"{"type": "object", "properties": {"model": {"type": "string"}, "gpus": {"type": "array", "items": {"type": "integer"}}, "changed": {"type": "boolean"},
   "was": {"type": "array", "items": {"type": "integer"}}}}"#.into(),
         "system.load" => r#"{"type": "object", "properties": {"model": {"type": "string"}, "loaded": {"type": "boolean", "description": "wait: true"}, "loading": {"type": "boolean", "description": "without wait: it loads in the background (system.busy / system.models)"}}}"#.into(),
-        "system.unload" => r#"{"type": "object", "properties": {"model": {"type": "string"}, "loaded": {"type": "boolean", "enum": [false]}}}"#.into(),
+        "system.unload" => r#"{"type": "object", "properties": {"model": {"type": "string"}, "loaded": {"type": "boolean", "enum": [false]}, "was_loaded": {"type": "boolean", "description": "force_when_idle: false when it was not loaded (there): nothing was done"}, "gpu": {"type": "integer", "nullable": true, "description": "force_when_idle: the card whose copy went (null: every copy)"}, "unpinned": {"type": "boolean", "description": "force_when_idle: it was pinned, and is not now"}, "hold_ended": {"type": "boolean", "description": "force_when_idle: an rsvp_s or keep hold was ended"}}}"#.into(),
         "system.eta" => r#"{"type": "object", "properties": {"method": {"type": "string"}, "max_willing_to_wait_s": {"type": "number", "nullable": true}, "would_accept": {"type": "boolean", "description": "false: its wait is known and past max_willing_to_wait_s - it would be answered wait_too_long"},
   "eta": {"type": "object", "properties": {"wait_s": {"type": "number", "nullable": true, "description": "until it starts (queue, room, loading); 0 when its model is loaded with a server free; null: unknown"}, "run_s": {"type": "number", "nullable": true, "description": "the median of the last 100 runs of its shape (else its model's); null: no history"},
   "total_s": {"type": "number", "nullable": true}, "samples": {"type": "integer"}, "basis": {"type": "string", "enum": ["shape", "model", "none"]}, "spread": {"type": "array", "nullable": true, "items": {"type": "number"}, "description": "p25..p75 (min..max under 4 samples)"}, "shape": {"type": "string"}}}}}"#.into(),
@@ -458,7 +1090,7 @@ pub fn errors(method: &str) -> &'static [(u16, &'static str, &'static str)] {
         "video.upload" => &[(400, "invalid_params", "not a picture, clip or sound (png jpg jpeg webp mp4 mov webm mkv wav mp3 flac m4a ogg), or empty")],
         "system.pin" => &[(404, "not_found", "no such model"), (409, "conflict", "the model is disabled (system.enable first) or its files are moving")],
         "system.load" => &[(404, "not_found", "no such model"), (503, "no_room", "its cards are held by other models now (retryable)")],
-        "system.enable" | "system.disable" | "system.unload" | "system.unpin" | "system.gpus" => &[(404, "not_found", "no such model"), (409, "conflict", "enable: the model's files are moving (system.move)")],
+        "system.enable" | "system.disable" | "system.unpin" | "system.gpus" => &[(404, "not_found", "no such model"), (409, "conflict", "enable: the model's files are moving (system.move)")],
         "system.drive.measure" => &[(404, "not_found", "no such drive (system.drives)"), (409, "busy", "a model loads from it, a move uses it, or another drive is being measured")],
         "system.move" => &[(400, "invalid_params", "its files are on that drive already, missing, or one would land on another file"), (404, "not_found", "no such model or drive"),
                            (409, "conflict", "the model is loaded or loading (stop it first), a process has its files open, or the drive lacks the room"),
@@ -486,6 +1118,7 @@ pub fn errors(method: &str) -> &'static [(u16, &'static str, &'static str)] {
         "model3d.tool" => &[(400, "invalid_params", "an op it does not know, faces missing for decimate, or a mesh that does not read"), (404, "not_found", "file: no GLB of that name here")],
         "image.upload" | "audio.upload" | "model3d.upload" => &[(400, "invalid_params", "a name of another type, data not base64, empty, or not a picture / recording / mesh that decodes (a picture over 40 MP)")],
         "image.cancel" | "audio.cancel" | "model3d.cancel" => &[(404, "not_found", "no job with that label or reentrant_id at all (the message names which); an ended one answers 200 already_ended")],
+        "system.unload" => &[(404, "not_found", "no such model"), (409,"busy","force_when_idle: the model is loading, answering, or has an open job")],
         "system.files.stat" => &[(400, "invalid_params", "kind is not image, audio, video or model3d, or name is not a plain file name"), (404, "not_found", "no such file")],
         "system.files.delete" => &[(400, "invalid_params", "kind, or a name that is not a clip, upload, picture or sound"), (404, "not_found", "no such file"),
                                    (409, "busy", "video: the clip is being made (video.cancel first)")],

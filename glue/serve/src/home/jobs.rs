@@ -223,6 +223,55 @@ impl Jobs {
     }
 }
 
+/// A file's identity for a fingerprint: its size and modification time
+fn stamp(p: &std::path::Path) -> String {
+    std::fs::metadata(p)
+        .map(|m| format!("{}:{:?}", m.len(), m.modified().ok()))
+        .unwrap_or_default()
+}
+
+/// FNV-1a 64 (stable across runs and builds, unlike the standard hasher)
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// The fingerprint of a request against a model entry (see `Home::fingerprint`)
+pub fn fingerprint_of(b: &Value, entry: Option<&Value>) -> String {
+    static EXE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let exe = EXE.get_or_init(|| {
+        std::env::current_exe()
+            .map(|p| stamp(&p))
+            .unwrap_or_default()
+    });
+    let mut body = b.clone();
+    if let Some(o) = body.as_object_mut() {
+        for k in [
+            "wait",
+            "label",
+            "title",
+            "reentrant_id",
+            "reentrantid",
+            "priority",
+            "held",
+            "queue",
+            "project",
+            "batch",
+        ] {
+            o.remove(k);
+        }
+    }
+    let mut files = String::new();
+    if let Some(m) = entry {
+        files.push_str(&m["arch"].to_string());
+        for p in super::registry::paths(m) {
+            files.push_str(&format!("|{}={}", p.display(), stamp(&p)));
+        }
+    }
+    format!("{:016x}", fnv(format!("{body}\n{exe}\n{files}").as_bytes()))
+}
+
 /// A request's reentrant_id (reentrantid is read too)
 pub fn reentrant(b: &Value) -> Option<String> {
     ["reentrant_id", "reentrantid"]
@@ -231,6 +280,17 @@ pub fn reentrant(b: &Value) -> Option<String> {
         .map(str::trim)
         .filter(|r| !r.is_empty())
         .map(|r| r.chars().take(200).collect())
+}
+
+/// The id-like key a cancel names without a label or reentrant_id (id, job_id, request_id): refused, not taken as
+/// "whatever runs"
+pub fn bare_id(b: &Value) -> Option<&'static str> {
+    if !s(b, "label").is_empty() || reentrant(b).is_some() {
+        return None;
+    }
+    ["id", "job_id", "request_id"]
+        .into_iter()
+        .find(|k| b[*k].as_str().is_some_and(|v| !v.trim().is_empty()) || b[*k].is_number())
 }
 
 /// Where a new job of `priority` goes among the waiting (in run order): after the last of its priority or higher
@@ -311,6 +371,20 @@ impl Home {
         }
     }
 
+    /// What a job's result is made of: its request (without the job's own bookkeeping: wait, label, title, reentrant_id,
+    /// priority ...), this server's build (its executable: size and time) and the model's files as they are on disk
+    /// (their sizes and times: a pull of another revision changes them). A reentrant_id answers with an earlier job only
+    /// when the fingerprints agree
+    pub(crate) fn fingerprint(&self, b: &Value) -> String {
+        let model = s(b, "model");
+        let entry = if model.is_empty() {
+            None
+        } else {
+            super::registry::find(&self.o.cfg, &model).ok().flatten()
+        };
+        fingerprint_of(b, entry.as_ref())
+    }
+
     /// Whether a cancel was asked for the job
     pub(crate) fn job_cancelled(&self, id: &str) -> bool {
         self.jobs.get(id).is_some_and(|j| j["cancel"] == true)
@@ -321,6 +395,7 @@ impl Home {
         let kind = kind_of_method(name);
         let rid = reentrant(b);
         let wait = b["wait"] != false;
+        let fp = self.fingerprint(b);
         // the job its reentrant_id names - unless it failed, was cancelled, or is done but its file is gone (then it is made
         // again under the same id: a link that answers 404 forever is not an answer)
         let again = rid
@@ -334,12 +409,13 @@ impl Home {
                     .rev()
                     .find(|j| {
                         j["kind"] == kind
+                            && j["method"] == name
                             && j["reentrant_id"] == r
                             && !matches!(j["state"].as_str(), Some("failed" | "cancelled"))
                     })
                     .cloned()
             })
-            .filter(|j| self.result_gone(j).is_none());
+            .filter(|j| self.result_gone(j).is_none() && j["fingerprint"] == fp.as_str());
         let reentered = again.is_some();
         let job = match again {
             Some(j) => j,
@@ -377,7 +453,7 @@ impl Home {
                         o.remove(k);
                     }
                 }
-                let mut j = json!({"id": id, "kind": kind, "method": name, "label": label, "title": title, "reentrant_id": rid, "state": "queued",
+                let mut j = json!({"id": id, "kind": kind, "method": name, "label": label, "title": title, "reentrant_id": rid, "fingerprint": fp, "state": "queued",
                                    "created": now(), "started": null, "ended": null, "priority": priority, "held": b["held"] == true,
                                    "project": text("project"), "batch": text("batch"), "body": body});
                 {
@@ -930,6 +1006,12 @@ impl Home {
     /// a label whatever the kind's servers are making
     pub(crate) fn job_cancel(self: &Arc<Self>, kind: &str, b: &Value) -> Result<Value, Fail> {
         let label = s(b, "label");
+        if let Some(k) = bare_id(b) {
+            return Err((
+                400,
+                format!("label: or reentrant_id required; {k} alone does not select a job"),
+            ));
+        }
         if label.is_empty() && reentrant(b).is_none() {
             let mut stopped = 0;
             for p in self.slots(kind) {
@@ -1058,10 +1140,59 @@ impl Home {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_cancel_names_a_job_by_label_or_reentrant_id_not_its_id() {
+        assert_eq!(bare_id(&json!({"id": "image-1794470000-3"})), Some("id"));
+        assert_eq!(bare_id(&json!({"job_id": "image-1"})), Some("job_id"));
+        assert_eq!(bare_id(&json!({"request_id": 4})), Some("request_id"));
+        // with a label or reentrant_id the id is ignored; nothing at all is "whatever runs" (not refused)
+        assert_eq!(
+            bare_id(&json!({"id": "image-1", "label": "barn-prompt"})),
+            None
+        );
+        assert_eq!(
+            bare_id(&json!({"id": "image-1", "reentrant_id": "r1"})),
+            None
+        );
+        assert_eq!(bare_id(&json!({})), None);
+        assert_eq!(bare_id(&json!({"id": ""})), None);
+    }
+
     use super::*;
 
     fn job(id: &str, order: f64, priority: i64) -> Value {
         json!({"id": id, "kind": "image", "state": "queued", "order": order, "priority": priority})
+    }
+
+    #[test]
+    fn a_reentrant_take_is_one_of_the_same_request_build_and_files() {
+        let a = json!({"input": "Hello.", "model": "zonos3-mini", "seed": 1, "reentrant_id": "tts-1", "wait": false});
+        // the bookkeeping does not change it
+        let mut b = a.clone();
+        b["wait"] = json!(true);
+        b["label"] = json!("x");
+        assert_eq!(fingerprint_of(&a, None), fingerprint_of(&b, None));
+        // anything that changes the sound does: an option, the seed, the text
+        for (k, v) in [
+            ("options", json!({"level": "off"})),
+            ("seed", json!(2)),
+            ("input", json!("Hello!")),
+            ("voice", json!("rupert")),
+        ] {
+            let mut c = a.clone();
+            c[k] = v;
+            assert_ne!(fingerprint_of(&a, None), fingerprint_of(&c, None), "{k}");
+        }
+        // and so do the model's files (another revision pulled)
+        let d = std::env::temp_dir().join(format!("ns-fp-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("m.gguf");
+        std::fs::write(&f, b"one").unwrap();
+        let entry = json!({"id": "zonos3-mini", "arch": "zonos3", "file": f.display().to_string()});
+        let before = fingerprint_of(&a, Some(&entry));
+        std::fs::write(&f, b"two two").unwrap();
+        assert_ne!(before, fingerprint_of(&a, Some(&entry)));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

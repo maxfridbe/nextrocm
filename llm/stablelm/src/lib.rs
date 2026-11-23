@@ -185,7 +185,7 @@ pub fn load<'g>(
     if gpu.raw().is_null() {
         return Err(error("stablelm requires a native HIP GPU"));
     }
-    let kernels = Kernels::load()?;
+    let kernels = Kernels::load(&gpu)?;
     let bytes = f
         .tensors
         .iter()

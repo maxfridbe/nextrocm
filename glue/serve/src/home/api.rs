@@ -33,6 +33,9 @@ const API_VERSION: u32 = 3;
 
 /// What this build does, by names a client can test for (system.version); names are added, never reused
 const FEATURES: &[&str] = &[
+    "system.unload.force_when_idle", "system.unload.gpu", "system.models.ages",
+    "system.models.gpus_one_of", "llm.idle_unload", "errors.cards_taken", "cards_taken.gpus",
+    "models.annotations", "models.controls",
     "system.busy",
     "system.busy.cards",
     "system.busy.slots",
@@ -200,10 +203,12 @@ pub(crate) fn rpc_error(method: &str, status: u16, code: Option<&str>, m: &str) 
     let mut e = error_of(status, m);
     // a job refused with queue: false says "busy: ..." (as video's busy)
     let code = code.or_else(|| (status == 409 && m.starts_with("busy:")).then_some("busy"));
+    let code = code.or_else(|| m.starts_with("cards taken:").then_some("cards_taken"));
     if let Some(c) = code {
         e["code"] = json!(c);
         e["retryable"] = json!(retryable(status, c));
     }
+    if e["code"] == "cards_taken" { e["retry_after_s"] = json!(crate::gpulock::RETRY_AFTER_S); }
     e["method"] = if method.is_empty() {
         Value::Null
     } else {
@@ -919,7 +924,7 @@ impl Home {
         }).collect();
         let maintenance = self.maintenance().map(|n| super::maint::public(&n));
         json!({"busy": !reasons.is_empty(), "reasons": reasons, "loading": loading, "working": working, "llm": {"active": active},
-               "maintenance": maintenance,
+               "maintenance": maintenance, "cards_taken": self.box_taken(), "cards_taken_gpus": self.taken_gpus(),
                "jobs": jobs, "video": video, "cards": per_card, "slots": slots, "parallel": self.parallel(all), "engines": engines})
     }
 

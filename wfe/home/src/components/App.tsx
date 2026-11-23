@@ -1,8 +1,10 @@
 /** The page: the host strip and the tabs - Status (the GPUs with what holds them and what is vouched for them, the
  *  models by kind with enable / start / stop, the front ends, the actions' output) and API. */
 import { jsx } from "../jsx.js";
-import { act, autoPull, copy, maintenance, render, setTab, toggleKind, toggleRsvp, ui } from "../main.js";
+import { act, autoPull, copy, maintenance, render, rpc, RpcFailed, setTab, since, toggleKind, toggleRsvp, ui } from "../main.js";
 import type { Available, Card, Model, Proc, Service } from "../types.js";
+import { agesText, unloadText } from "../ages.js";
+import { DrivesPanel, ModelDisk } from "./Drives.js";
 import { Api } from "./Api.js";
 import { ConfigView } from "./Config.js";
 import { NonCommercial } from "./Licence.js";
@@ -68,6 +70,46 @@ interface AllocRow {
   measured: boolean;
   port?: string | null;
   tip: string;
+  times?: string | null;
+  copy?: { model: Model; gpu: number; busy: boolean } | null;
+}
+
+type Instance = NonNullable<Model["instances"]>[number];
+
+/** A model's served copy on card `g` (its instance there, or one spanning it); none when it has no copy there */
+function copyOn(model: string, g: number): { m: Model; i: Instance } | null {
+  const m = (ui.state?.models ?? []).find((x) => x.id === model);
+  const i = (m?.instances ?? []).find((x) => x.gpu === g || (x.gpus ?? []).includes(g));
+  return m && i ? { m, i } : null;
+}
+
+/** A model's copy on card `g`: its times as words; none when not loaded there */
+function cardTimes(model: string, g: number): string | null {
+  const c = copyOn(model, g);
+  return c ? [agesText(c.i, since()), unloadText(c.i, since())].filter(Boolean).join(" · ") : null;
+}
+
+/** Whether process `p` is the served copy `c` (its server's port when it has one: a process of the same file without
+ *  it - a bench or run under the GPU lock - is not) */
+const isCopy = (p: Proc, c: { i: Instance } | null) => !!c && (c.i.port == null || p.port === String(c.i.port));
+
+/** The × of a card's line: system.unload with force_when_idle, of that card's copy - refused while the model answers
+ *  a request, runs a job or loads (409 busy, nothing stopped); idle, unloaded at once, over its pin and hold */
+async function unloadIdle(model: string, gpu: number): Promise<void> {
+  const key = `${model}@${gpu}`;
+  ui.unloading[key] = null;
+  render();
+  let said: { said: string | null; bad: boolean };
+  try {
+    const r = (await rpc("system.unload", { model, force_when_idle: true, gpu })) as { was_loaded?: boolean; unpinned?: boolean; hold_ended?: boolean };
+    const also = [r.unpinned ? "unpinned" : "", r.hold_ended ? "its hold ended" : ""].filter((x) => x).join(", ");
+    said = { said: r.was_loaded === false ? "not loaded here" : `unloaded${also ? ` (${also})` : ""}`, bad: false };
+  } catch (e) {
+    said = { said: e instanceof RpcFailed ? e.words : String(e), bad: true };
+  }
+  ui.unloading[key] = said;
+  render();
+  setTimeout(() => { if (ui.unloading[key] === said) { delete ui.unloading[key]; render(); } }, 8000);
 }
 
 /** The card's processes and the memory vouched for it as one list, a line a model: the lines with a job on top (next to
@@ -76,7 +118,8 @@ function allocRows(c: Card): AllocRow[] {
   const rows: AllocRow[] = [];
   const used = new Set<Proc>();
   for (const v of c.vouched) {
-    const mine = c.procs.filter((p) => p.model_id === v.model && !used.has(p) && ["loaded", "busy"].includes(v.state));
+    const here = copyOn(v.model, c.index);
+    const mine = c.procs.filter((p) => p.model_id === v.model && !used.has(p) && ["loaded", "busy"].includes(v.state) && isCopy(p, here));
     mine.forEach((p) => used.add(p));
     const job = mine.find((p) => p.job_title || p.job_label);
     rows.push({
@@ -84,6 +127,8 @@ function allocRows(c: Card): AllocRow[] {
       state: v.state, held: mine.reduce((n, p) => n + p.vram_mb, 0), vouched: v.mb, headroom: Math.min(v.headroom_mb ?? 0, v.mb),
       headroomGiven: v.headroom_given, counted: v.counted, of: v.of, measured: v.measured, port: mine[0]?.port ?? null,
       tip: mine.map((p) => p.args ?? `pid ${p.pid}`).join("\n"),
+      times: cardTimes(v.model, c.index),
+      copy: here && ["loaded", "busy"].includes(v.state) ? { model: here.m, gpu: c.index, busy: here.i.busy || ["busy", "loading"].includes(here.m.state) || !!job } : null,
     });
   }
   for (const p of c.procs.filter((q) => !used.has(q))) {
@@ -114,6 +159,20 @@ function AllocBar(r: AllocRow, total: number) {
 
 const GROUP_WORD: Record<string, string> = { llm: "chat models", video: "video engines" };
 
+/** A served copy's ×: dimmed while the model is at work (a click then says why it is refused), a spinner while asked */
+function UnloadX(c: NonNullable<AllocRow["copy"]>) {
+  const key = `${c.model.id}@${c.gpu}`;
+  const asking = key in ui.unloading && ui.unloading[key] === null;
+  const extra = [c.model.pinned ? "it is pinned: this unpins it" : "", c.model.held_s ? "its hold ends" : ""].filter((x) => x).join("; ");
+  return (
+    <button class={{ unloadx: true, busy: c.busy }} attrs={{ disabled: asking, "aria-label": `unload ${c.model.id} from GPU ${c.gpu}`,
+        title: c.busy ? "unload (only when idle) - it is working now: busy, try when idle" : `unload (only when idle)${extra ? ` - ${extra}` : ""}` }}
+      on={{ click: () => void unloadIdle(c.model.id, c.gpu) }}>
+      {asking ? <span class="btnspin" /> : "×"}
+    </button>
+  );
+}
+
 function AllocLine(total: number) {
   return (r: AllocRow) => {
     const live = r.held > 0;
@@ -131,6 +190,10 @@ function AllocLine(total: number) {
         </span>
         {AllocBar(r, total)}
         <span class="mb">{live ? `${gib(r.held)} GiB` : Alloc(r.vouched, r.headroom, r.kind, r.headroomGiven)}</span>
+        {r.copy ? UnloadX(r.copy) : null}
+        {r.copy && ui.unloading[`${r.copy.model.id}@${r.copy.gpu}`]?.said
+          ? <div class={{ hint: true, unloadsaid: true, bad: !!ui.unloading[`${r.copy.model.id}@${r.copy.gpu}`]?.bad }}>{ui.unloading[`${r.copy.model.id}@${r.copy.gpu}`]?.said}</div> : null}
+        {r.times ? <div class="hint timesline">{r.times}</div> : null}
         {r.job
           ? <div class="jobline" attrs={{ title: r.jobLabel }}><span class="i" props={{ innerHTML: "&#xf0da;" }} /> <b>{r.job}</b>{r.jobLabel ? <span class="hint"> {r.jobLabel}</span> : null}</div>
           : null}
@@ -225,6 +288,21 @@ function GpuPicker(m: Model) {
   );
 }
 
+/** Since it loaded and since its last request (the oldest copy, the latest request of any), its idle unload; each copy's
+ *  clocks on hover */
+function ModelAges(m: Model) {
+  const s = since();
+  const text = agesText({ ...m, busy: m.state === "busy" }, s);
+  if (!text) return null;
+  const unload = unloadText(m, s);
+  const copies = (m.instances ?? []).map((i) => `${i.gpu != null ? `GPU ${i.gpu}` : "?"}${i.port ? ` :${i.port}` : ""}: ${agesText(i, s)}${unloadText(i, s) ? ` · ${unloadText(i, s)}` : ""}`);
+  return (
+    <div class="hint ages" attrs={{ title: copies.length > 1 ? copies.join("\n") : "since it finished loading · since a request was last on it (an RPC, an OpenAI call, its page or a live conversation)" }}>
+      {text}{unload ? ` · ${unload}` : ""}
+    </div>
+  );
+}
+
 function ModelRow(m: Model) {
   const p = ui.pending[m.id];
   const spin = (what: string) => p?.what === what || (what === "pin" && m.state === "loading");
@@ -248,7 +326,8 @@ function ModelRow(m: Model) {
       </div>
       <div class="mstate"><span class={{ tag: true, [m.state]: true }}>{STATE_TEXT[m.state] ?? m.state}</span>
         {m.pinned ? <span class="hint" attrs={{ title: "pinned: kept loaded, never unloaded for idleness or stopped for another model's room" }}> · pinned</span>
-          : m.held_s > 0 ? <span class="hint" attrs={{ title: "a request's rsvp_s keeps it loaded until then" }}> · held for {Math.round(m.held_s)} more s</span> : null}</div>
+          : m.held_s > 0 ? <span class="hint" attrs={{ title: "a request's rsvp_s keeps it loaded until then" }}> · held for {Math.round(m.held_s)} more s</span> : null}
+        {ModelAges(m)}</div>
       <div class="acts">
         <span class="onoff" attrs={{ title: m.enabled ? "enabled: it loads on its first request and unloads after the idle time (pin keeps it loaded)" : "disabled: off the API (and Open WebUI's list)" }}>
           <label class={{ on: !m.enabled }}>
@@ -279,6 +358,7 @@ function ModelRow(m: Model) {
             ]
           : null}
       </div>
+      {ModelDisk(m)}
     </div>
   );
 }
@@ -432,6 +512,7 @@ function Status() {
           </button></div>
         <div class="pbody"><div class="cards">{(st?.cards ?? []).map(CardView)}</div></div>
       </section>
+      <DrivesPanel />
       <Models />
       <NotDownloaded />
       <section class="panel">

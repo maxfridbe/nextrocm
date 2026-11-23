@@ -30,11 +30,17 @@ fn floats(b: &DevBuf, n: usize) -> Result<()> {
     )
 }
 impl Kernels {
-    pub fn load() -> Result<Self> {
+    pub fn load(gpu: &Gpu) -> Result<Self> {
         let a = api()?;
+        // Bind once for this engine's actual GPU. The process-lifetime silo
+        // resolves variant -> base; absent operations retain shared fallback.
+        let silo = nextrocm_engine_core::silo_for("stablelm", gpu.index)?;
         macro_rules! sym {
             ($s:literal) => {{
-                let p = a.symbol($s);
+                let p = resolve_symbol(
+                    || silo.map_or(std::ptr::null_mut(), |s| s.symbol($s)),
+                    || a.symbol($s),
+                );
                 if p.is_null() {
                     return Err(Error(format!(
                         "missing {}: build kernels/llm/stablelm/stablelm.hip into runtime",
@@ -171,5 +177,25 @@ impl Kernels {
                 out.fp(),
             )
         })
+    }
+}
+
+fn resolve_symbol(
+    silo: impl FnOnce() -> *mut c_void,
+    shared: impl FnOnce() -> *mut c_void,
+) -> *mut c_void {
+    let p = silo();
+    if p.is_null() { shared() } else { p }
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+    #[test]
+    fn architecture_override_and_shared_fallback() {
+        let base = std::ptr::dangling_mut::<u8>().cast::<c_void>();
+        assert_eq!(resolve_symbol(|| base, || panic!("shared must not override silo")), base);
+        assert_eq!(resolve_symbol(std::ptr::null_mut, || base), base);
+        assert!(resolve_symbol(std::ptr::null_mut, std::ptr::null_mut).is_null());
     }
 }

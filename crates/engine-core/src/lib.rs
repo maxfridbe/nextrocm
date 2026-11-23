@@ -1,18 +1,16 @@
-//! The safe layer over `libnextrocm-<kind>.so` (kernels/ns: CUDA behind nextsycl's ns.h ABI): GPUs, device and pinned
+//! The safe layer over `libnextrocm-<kind>.so` (kernels/ns HIP ABI): GPUs, device and pinned
 //! host buffers that free themselves, copies with their sizes checked. Everything the kernels run on comes from here.
 //!
-//! Without the library (the phase 1 python engine needs no kernels of ours) the GPUs are read with `nvidia-smi` and a
-//! `DevBuf` is plain host memory with the same methods: the contracts and the glue behave as they did, and nothing in
-//! them needs to know which GPU runtime is behind an engine.
+//! Real GPU discovery and memory planning require the HIP library. Explicit detached GPUs remain available
+//! for CPU contract tests; they do not invent a device capacity.
 
 use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::ffi::{c_char, c_void};
-use std::process::Command;
 use std::sync::{Arc, OnceLock};
 
 pub mod options;
 
-pub use nextrocm_sys::Api;
+pub use nextrocm_sys::{variant, Api};
 pub use options::{At, EngineOption};
 
 #[derive(Debug)]
@@ -44,37 +42,252 @@ pub fn use_kind(kind: &'static str) -> bool {
 
 /// The kernel library, loaded once: the kind's (`use_kind`), or `NEXTROCM_LIB`. None when there is none.
 fn lib() -> Option<&'static Api> {
-    API.get_or_init(|| Api::load("runtime")).as_ref().ok()
+    API.get_or_init(|| Api::load(KIND.get().copied().unwrap_or("image")))
+        .as_ref()
+        .ok()
 }
 
 /// The kernel library, or why it did not load
 pub fn api() -> Result<&'static Api> {
-    API.get_or_init(|| Api::load("runtime"))
+    API.get_or_init(|| Api::load(KIND.get().copied().unwrap_or("image")))
         .as_ref()
         .map_err(|e| Error(e.clone()))
 }
 
-/// A model's silo (`kernels/<kind>/<arch>/silo/`: its tuned kernels, `dist/silo/libnextrocm-<arch>.so`), opened on
-/// the first ask and kept: None when there is none (or NS_SILO=0) - the engine then uses the shared kernels
+/// A model's silo (`kernels/<kind>/<arch>/silo/`: its tuned kernels, `dist/silo/libnextrocm-<arch>.so`, one library
+/// for every card), opened on the first ask and kept: None when there is none (or NS_SILO=0) - the engine then uses the
+/// shared kernels. With a variant every GPU of the process matches (`silo/variants/<name>`: a box of one kind of card),
+/// that variant's ops over it; an engine that binds per GPU takes each GPU's with `silo_for`.
 pub fn silo(arch: &str) -> Result<Option<&'static nextrocm_sys::Silo>> {
-    silo_for(arch, 0)
+    silo_over(arch, None)
 }
 
-/// A model's silo for a card: the one built for its compute capability (`cc`: Gpu::cc) when the silo is built a card
-/// at a time, else the one for every card - two cards of two kinds run two silos side by side
-pub fn silo_for(arch: &str, cc: u32) -> Result<Option<&'static nextrocm_sys::Silo>> {
-    static SILOS: std::sync::Mutex<Vec<(String, u32, Option<&'static nextrocm_sys::Silo>)>> =
+/// The silo for GPU `gpu` (its index): the variant that GPU matches over the default silo
+/// (`silo/variants/<name>/variant.yml`'s rule; NS_SILO_VARIANT=<name> forces one, `none` none), else the default silo;
+/// resolved once and kept, so an engine binds each GPU's ops at load and calls them without a lookup
+pub fn silo_for(arch: &str, gpu: usize) -> Result<Option<&'static nextrocm_sys::Silo>> {
+    silo_over(arch, Some(gpu))
+}
+
+/// The default silo of `arch`, opened once
+fn base_silo(arch: &str) -> Result<Option<&'static nextrocm_sys::Silo>> {
+    static SILOS: std::sync::Mutex<Vec<(String, Option<&'static nextrocm_sys::Silo>)>> =
         std::sync::Mutex::new(Vec::new());
     let mut m = SILOS.lock().unwrap();
-    if let Some((_, _, s)) = m.iter().find(|(a, c, _)| a == arch && *c == cc) {
+    if let Some((_, s)) = m.iter().find(|(a, _)| a == arch) {
         return Ok(*s);
     }
     let s = api()?
-        .silo_for(arch, cc)
+        .silo(arch)
         .map_err(Error)?
         .map(|s| &*Box::leak(Box::new(s)));
-    m.push((arch.to_string(), cc, s));
+    m.push((arch.to_string(), s));
     Ok(s)
+}
+
+/// The variants built of `arch`'s silo (`Api::silo_variants`), listed once and kept
+fn variants_of(arch: &str) -> Result<Vec<variant::VariantFile>> {
+    type Variants = Vec<(
+        String,
+        std::result::Result<Vec<variant::VariantFile>, String>,
+    )>;
+    static VARIANTS: std::sync::Mutex<Variants> = std::sync::Mutex::new(Vec::new());
+    let a = api()?;
+    let mut m = VARIANTS.lock().unwrap();
+    if !m.iter().any(|(x, _)| x == arch) {
+        m.push((arch.to_string(), a.silo_variants(&a.silo_name(arch))));
+    }
+    m.iter()
+        .find(|(x, _)| x == arch)
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| Ok(Vec::new()))
+        .map_err(Error)
+}
+
+/// The variant of `arch`'s silo for `gpus` (every one of them must match it; empty: every GPU of the process), or
+/// the forced one (NS_SILO_VARIANT): None with no silo (or NS_SILO=0), `none`, or no variant matching. Two matching
+/// say so once (`variant::ambiguity`); the first by name is taken.
+fn chosen_variant(
+    arch: &str,
+    gpus: &[usize],
+) -> Result<Option<(variant::VariantFile, Vec<variant::DeviceInfo>)>> {
+    static WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    if base_silo(arch)?.is_none() {
+        return Ok(None);
+    }
+    let force = std::env::var("NS_SILO_VARIANT")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    if force.as_deref() == Some("none") {
+        return Ok(None);
+    }
+    let variants = variants_of(arch)?;
+    if variants.is_empty() && force.is_none() {
+        return Ok(None);
+    }
+    let a = api()?;
+    let gpus: Vec<usize> = if gpus.is_empty() {
+        self::gpus()?.into_iter().map(|g| g.0).collect()
+    } else {
+        gpus.to_vec()
+    };
+    let devices: Vec<variant::DeviceInfo> = gpus
+        .iter()
+        .map(|g| a.device_info(*g).map_err(Error))
+        .collect::<Result<_>>()?;
+    if let Some(w) = variant::ambiguity(&variants, &devices, force.as_deref()) {
+        let mut said = WARNED.lock().unwrap();
+        let key = format!("{arch} {gpus:?}");
+        if !said.contains(&key) {
+            eprintln!("silo {arch}: {w}");
+            said.push(key);
+        }
+    }
+    let v = variant::choose(&variants, &devices, force.as_deref())
+        .map_err(Error)?
+        .cloned();
+    Ok(v.map(|v| (v, devices)))
+}
+
+/// The silo of `arch` for GPU `gpu`, or every GPU of the process (`silo`, `silo_for`): a variant all of them match,
+/// else the default
+fn silo_over(arch: &str, gpu: Option<usize>) -> Result<Option<&'static nextrocm_sys::Silo>> {
+    static OVER: std::sync::Mutex<Vec<(String, String, &'static nextrocm_sys::Silo)>> =
+        std::sync::Mutex::new(Vec::new());
+    static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let Some(base) = base_silo(arch)? else {
+        return Ok(None);
+    };
+    let gpus: Vec<usize> = gpu.into_iter().collect();
+    let Some((v, devices)) = chosen_variant(arch, &gpus)? else {
+        return Ok(Some(base));
+    };
+    let s = {
+        let mut m = OVER.lock().unwrap();
+        match m.iter().find(|(x, n, _)| x == arch && *n == v.name) {
+            Some((_, _, s)) => *s,
+            None => {
+                let s: &'static nextrocm_sys::Silo =
+                    Box::leak(Box::new(api()?.with_variant(base, &v).map_err(Error)?));
+                m.push((arch.to_string(), v.name.clone(), s));
+                s
+            }
+        }
+    };
+    let on: Vec<String> = devices
+        .iter()
+        .map(|d| format!("GPU {} ({})", d.index, d.name))
+        .collect();
+    let said = format!("{arch} {} {}", on.join(","), v.name);
+    let mut sd = SAID.lock().unwrap();
+    if !sd.contains(&said) {
+        eprintln!(
+            "silo {arch}: variant {} on {} - {} ({})",
+            v.name,
+            on.join(", "),
+            v.manifest.description,
+            v.path.display()
+        );
+        sd.push(said);
+    }
+    Ok(Some(s))
+}
+
+/// A silo variant's settings for an engine about to load (CONTRIBUTING rule 5, `options::variant_settings`): the
+/// variant of the first of `archs` with a silo (an arch as it is, or without its punctuation), chosen for `gpus` (every one must match it, as `silo(arch)` asks of
+/// every GPU of the process; empty: every GPU of the process), its `settings` checked against the engine's options
+/// `declared`. The variant's name and the assignments (variable, value, option name) - the caller sets those the
+/// environment (or the load's settings) does not have, so a model card, `--opt` and the user's own environment win.
+/// None: no silo, no variant applying, or one without settings. Err: a setting the engine does not take.
+pub fn variant_settings(
+    archs: &[&str],
+    gpus: &[usize],
+    declared: &[EngineOption],
+) -> Result<Option<(String, Vec<options::Setting>)>> {
+    // only once the command has opened its kind's library (a GPU open): never choose the library, nor touch the GPUs
+    // before the variables an engine's kernels read when they open are set
+    if API.get().is_none() {
+        return Ok(None);
+    }
+    let a = api()?;
+    // a registry architecture's silo: its name as it is, or without its punctuation (moss-image: kernels/image/mossimage)
+    let names: Vec<String> = archs
+        .iter()
+        .flat_map(|x| {
+            [
+                x.to_string(),
+                x.chars().filter(|c| c.is_ascii_alphanumeric()).collect(),
+            ]
+        })
+        .collect();
+    for arch in &names {
+        // an architecture's other names have no silo file: never asked to open one (NS_SILO_REQUIRED would refuse it)
+        if !a
+            .silo_dir()
+            .join(format!("libnextrocm-{}.so", a.silo_name(arch)))
+            .exists()
+            || base_silo(arch)?.is_none()
+        {
+            continue;
+        }
+        let Some((v, _)) = chosen_variant(arch, gpus)? else {
+            return Ok(None);
+        };
+        if v.manifest.settings.is_empty() {
+            return Ok(None);
+        }
+        let set =
+            options::variant_settings(&v.manifest.settings, declared, &v.name).map_err(Error)?;
+        return Ok(Some((v.name, set)));
+    }
+    Ok(None)
+}
+
+/// `variant_settings` applied to this process's environment: each variable the environment does not have set, and a
+/// line each for the load's log - what was set, and what was not because something above the variant gave it
+pub fn apply_variant_settings(
+    archs: &[&str],
+    gpus: &[usize],
+    declared: &[EngineOption],
+) -> Result<Vec<String>> {
+    let Some((name, set)) = variant_settings(archs, gpus, declared)? else {
+        return Ok(Vec::new());
+    };
+    let mut log = Vec::new();
+    for (var, v, opt) in set {
+        match std::env::var(&var) {
+            Ok(given) => log.push(format!("silo variant {name}: {opt}={v} not applied - {var}={given} is given (a model card, --opt or the environment)")),
+            Err(_) => {
+                log.push(format!("silo variant {name}: {opt}={v} ({var})"));
+                std::env::set_var(&var, &v);
+            }
+        }
+    }
+    Ok(log)
+}
+
+/// `variant_settings` into a load's settings (an image, video, audio or 3D engine's `LoadOptions::settings`, by
+/// variable): each the settings and the environment do not have; the log lines as `apply_variant_settings`'s
+pub fn variant_settings_into(
+    archs: &[&str],
+    gpus: &[usize],
+    declared: &[EngineOption],
+    settings: &mut std::collections::BTreeMap<String, String>,
+) -> Result<Vec<String>> {
+    let Some((name, set)) = variant_settings(archs, gpus, declared)? else {
+        return Ok(Vec::new());
+    };
+    let mut log = Vec::new();
+    for (var, v, opt) in set {
+        match settings.get(&var).cloned().or_else(|| std::env::var(&var).ok()) {
+            Some(given) => log.push(format!("silo variant {name}: {opt}={v} not applied - {var}={given} is given (a model card, --opt or the environment)")),
+            None => {
+                log.push(format!("silo variant {name}: {opt}={v} ({var})"));
+                settings.insert(var, v);
+            }
+        }
+    }
+    Ok(log)
 }
 
 fn check(api: &Api, rc: i32, what: &str) -> Result<()> {
@@ -83,42 +296,6 @@ fn check(api: &Api, rc: i32, what: &str) -> Result<()> {
     } else {
         Err(Error(format!("{what}: {}", api.error())))
     }
-}
-
-/// One row of `nvidia-smi`: (index, name, pci bus id, total MiB, free MiB)
-type Row = (usize, String, String, u64, u64);
-
-fn smi() -> Result<Vec<Row>> {
-    let out = Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=index,name,pci.bus_id,memory.total,memory.free",
-            "--format=csv,noheader,nounits",
-        ])
-        .output()
-        .map_err(|e| Error(format!("listing the GPUs: nvidia-smi: {e}")))?;
-    if !out.status.success() {
-        return Err(Error(format!(
-            "listing the GPUs: nvidia-smi: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    let mut rows = Vec::new();
-    for l in String::from_utf8_lossy(&out.stdout).lines() {
-        let f: Vec<&str> = l.split(',').map(str::trim).collect();
-        if f.len() < 5 {
-            continue;
-        }
-        let n = |s: &str| s.parse::<u64>().unwrap_or(0);
-        // nvidia-smi writes the bus id as 00000000:01:00.0; sysfs wants 0000:01:00.0
-        let pci = f[2].to_lowercase();
-        let pci = pci
-            .strip_prefix("0000")
-            .filter(|_| pci.len() > 12)
-            .map(str::to_string)
-            .unwrap_or(pci);
-        rows.push((n(f[0]) as usize, f[1].to_string(), pci, n(f[3]), n(f[4])));
-    }
-    Ok(rows)
 }
 
 /// The GPUs: (index, name).
@@ -148,56 +325,89 @@ pub fn gpus() -> Result<Vec<(usize, String)>> {
             })
             .collect();
     }
-    Ok(smi()?.into_iter().map(|r| (r.0, r.1)).collect())
+    Err(api()
+        .err()
+        .unwrap_or_else(|| Error("GPU library unavailable".into())))
 }
 
-/// GPU `index`'s compute units and clock. The driver gives neither through nvidia-smi's plain query; (0, 0) = unknown.
+/// GPU `index`'s compute units and clock, as reported by HIP.
 pub fn gpu_units(index: usize) -> Result<(u32, u32)> {
-    let Some(a) = lib() else { return Ok((0, 0)) };
+    let a = api()?;
+    let index = i32::try_from(index).map_err(|_| Error("GPU index exceeds ABI range".into()))?;
     let (mut u, mut m) = (0, 0);
     // SAFETY: out-pointers to locals.
     check(
         a,
-        unsafe { (a.gpu_units)(index as i32, &mut u, &mut m) },
+        unsafe { (a.gpu_units)(index, &mut u, &mut m) },
         "the GPU's compute units",
     )?;
+    if u < 0 || m < 0 {
+        return Err(Error("negative GPU compute properties".into()));
+    }
     Ok((u as u32, m as u32))
 }
 
-/// Every GPU's index, the one with the most memory last; ties keep the driver's order.
+/// Every GPU ordered by reported compute units times clock; ties preserve device order.
 pub fn gpus_weakest_first() -> Result<Vec<usize>> {
-    let mut v: Vec<(usize, u64)> = smi()?.into_iter().map(|r| (r.0, r.3)).collect();
+    let speeds = gpus()?
+        .iter()
+        .map(|(i, _)| gpu_units(*i).map(|(u, m)| (*i, u64::from(u) * u64::from(m))))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(order_by_speed(&speeds))
+}
+pub fn order_by_speed(cards: &[(usize, u64)]) -> Vec<usize> {
+    let mut v = cards.to_vec();
     v.sort_by_key(|x| x.1);
-    Ok(v.into_iter().map(|x| x.0).collect())
+    v.into_iter().map(|x| x.0).collect()
 }
 
-/// GPU `index`'s PCIe link as nvidia-smi gives it: "gen4 x16 (max gen4 x16)". The link drops a generation when the
-/// card is idle (power saving): read it under load for what a copy gets.
+/// Actual PCIe link from sysfs, bound to the HIP device's reported PCI address.
+/// Missing driver/library/sysfs information is unknown, never a guessed link.
 pub fn pcie_link(index: usize) -> Option<String> {
-    let out = Command::new("nvidia-smi")
-        .args(["--query-gpu=index,pcie.link.gen.current,pcie.link.width.current,pcie.link.gen.max,pcie.link.width.max", "--format=csv,noheader,nounits"])
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout).lines().find_map(|l| {
-        let f: Vec<&str> = l.split(',').map(str::trim).collect();
-        (f.len() >= 5 && f[0].parse::<usize>().ok() == Some(index))
-            .then(|| format!("gen{} x{} (max gen{} x{})", f[1], f[2], f[3], f[4]))
-    })
+    let a = api().ok()?;
+    let i = i32::try_from(index).ok()?;
+    let mut b = [0 as c_char; 64];
+    if unsafe { (a.gpu_pci)(i, b.as_mut_ptr(), b.len()) } != 0 {
+        return None;
+    }
+    let bytes: Vec<u8> = b.iter().map(|c| *c as u8).collect();
+    let end = bytes.iter().position(|c| *c == 0)?;
+    let pci = std::str::from_utf8(&bytes[..end]).ok()?;
+    if pci.is_empty()
+        || !pci
+            .bytes()
+            .all(|c| c.is_ascii_hexdigit() || c == b':' || c == b'.')
+    {
+        return None;
+    }
+    let path = std::path::Path::new("/sys/bus/pci/devices").join(pci);
+    let read = |n: &str| {
+        std::fs::read_to_string(path.join(n))
+            .ok()
+            .map(|s| s.trim().to_string())
+    };
+    Some(format!(
+        "{} x{} (max {} x{})",
+        read("current_link_speed")?,
+        read("current_link_width")?,
+        read("max_link_speed")?,
+        read("max_link_width")?
+    ))
 }
 
 /// One GPU.
 pub struct Gpu {
-    /// the kernel library and this GPU's handle in it; None: no library (host memory, nvidia-smi)
+    /// the kernel library and this GPU's handle in it; None: explicit detached test device
     dev: Option<(&'static Api, nextrocm_sys::Gpu)>,
     pub index: usize,
     pub name: String,
     /// its PCI address ("0000:03:00.0"), where its sensors are (sysfs hwmon)
     pub pci: Option<String>,
-    /// its compute capability as one number (86: an RTX 3060, 120: an RTX 5070); 0 without the library
+    /// Legacy ABI field, zero on AMD; use device_info for actual gfx/wave capabilities.
     pub cc: u32,
 }
 
-// SAFETY: the library's GPU handle is a context and streams; CUDA's are thread-safe.
+// SAFETY: the library's GPU handle is a context and streams; HIP's are thread-safe.
 unsafe impl Send for Gpu {}
 unsafe impl Sync for Gpu {}
 
@@ -253,17 +463,7 @@ impl Gpu {
                 cc: cc as u32,
             }));
         }
-        let r = smi()?
-            .into_iter()
-            .find(|r| r.0 == index)
-            .ok_or_else(|| Error(format!("no GPU {index}")))?;
-        Ok(Arc::new(Gpu {
-            dev: None,
-            index,
-            name: r.1,
-            pci: Some(r.2).filter(|s| !s.is_empty()),
-            cc: 0,
-        }))
+        Err(Error("GPU library unavailable".into()))
     }
 
     /// A GPU with no device behind it (no library, no sensors): what a server's tests run a fake engine on
@@ -301,11 +501,13 @@ impl Gpu {
             )?;
             return Ok((t, (f >= 0).then_some(f as u64)));
         }
-        let r = smi()?
-            .into_iter()
-            .find(|r| r.0 == self.index)
-            .ok_or_else(|| Error(format!("no GPU {}", self.index)))?;
-        Ok((r.3 << 20, Some(r.4 << 20)))
+        Err(Error("detached GPU has no device memory report".into()))
+    }
+
+    /// Driver free memory, or one quarter of reported total if free is unavailable.
+    pub fn free_or_guess(&self) -> Result<u64> {
+        let (total, free) = self.memory()?;
+        Ok(free_or_quarter(total, free))
     }
 
     /// A ticket for the work queued on the GPU so far (None without a device)
@@ -827,5 +1029,22 @@ impl Arena {
         if mark < *off {
             *off = mark;
         }
+    }
+}
+
+/// Conservative device-derived fallback; never more than the reported total.
+pub fn free_or_quarter(total: u64, free: Option<u64>) -> u64 {
+    free.unwrap_or(total / 4).min(total)
+}
+#[cfg(test)]
+mod planning_tests {
+    use super::*;
+    #[test]
+    fn device_memory_and_stable_speed() {
+        assert_eq!(free_or_quarter(100, None), 25);
+        assert_eq!(free_or_quarter(100, Some(40)), 40);
+        assert_eq!(free_or_quarter(100, Some(120)), 100);
+        assert_eq!(free_or_quarter(0, None), 0);
+        assert_eq!(order_by_speed(&[(3, 30), (1, 10), (2, 30)]), vec![1, 3, 2]);
     }
 }

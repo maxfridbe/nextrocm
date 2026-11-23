@@ -59,7 +59,24 @@ int ns_gpu_units(int index, int* units, int* mhz) {
     return 0;
 }
 
-// GPU `index`'s compute capability, major * 10 + minor (86, 120): which of a model's per-card silos it runs
+int ns_gpu_props(int index, uint64_t* total, int* wave, int* integrated,
+                 char* gfx, size_t len) {
+    if (index < 0 || !total || !wave || !integrated || !gfx || len == 0)
+        return ns_fail("ns_gpu_props: invalid index or output");
+    hipDeviceProp_t p{};
+    NS_CU(hipGetDeviceProperties(&p, index));
+    const size_t n = strnlen(p.gcnArchName, sizeof(p.gcnArchName));
+    if (n == 0 || n == sizeof(p.gcnArchName) || n >= len || p.warpSize <= 0)
+        return ns_fail("ns_gpu_props: incomplete properties or short gfx buffer");
+    // Publish only after the query and every fallible check succeeds.
+    std::memcpy(gfx, p.gcnArchName, n + 1);
+    *total = static_cast<uint64_t>(p.totalGlobalMem);
+    *wave = p.warpSize;
+    *integrated = p.integrated ? 1 : 0;
+    return 0;
+}
+
+// Legacy compatibility query: AMD gfx capabilities are exposed by ns_gpu_props.
 int ns_gpu_cc(int index, int* cc) {
     // No NVIDIA SM capability on AMD. gfx targets are selected at build time.
     (void)index;

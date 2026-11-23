@@ -1,13 +1,14 @@
 //! Raw bindings to `libnextrocm.so`: one function pointer per shared declaration of `kernels/ns/ns.h` (an engine
 //! binds its own kernels by name: `Api::symbol`).
 //!
-//! The library is opened at run time (`dlopen`), not linked: the Rust side builds anywhere without the CUDA
+//! The library is opened at run time (`dlopen`), not linked: the Rust side builds anywhere without the HIP
 //! toolchain, and the kernels rebuild without relinking the runtime. Nothing here is safe to call directly;
 //! `nextrocm-core` wraps it. A binary built with the libraries beside it (build.rs) carries them and opens them from
 //! anonymous memory files; NS_LIB_FROM_DISK=1 or NEXTROCM_LIB opens the files instead.
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
+pub mod variant;
 
 include!(concat!(env!("OUT_DIR"), "/libs_embedded.rs"));
 
@@ -18,6 +19,7 @@ extern "C" {
     fn dlerror() -> *const c_char;
 }
 const RTLD_NOW: c_int = 2;
+const RTLD_LOCAL: c_int = 0;
 const RTLD_GLOBAL: c_int = 0x100;
 
 /// An opened GPU (`ns_gpu*`).
@@ -37,6 +39,9 @@ pub struct Api {
     pub gpu_name: unsafe extern "C" fn(c_int, *mut c_char, usize) -> c_int,
     pub gpu_pci: unsafe extern "C" fn(c_int, *mut c_char, usize) -> c_int,
     pub gpu_units: unsafe extern "C" fn(c_int, *mut c_int, *mut c_int) -> c_int,
+    pub gpu_props: Option<
+        unsafe extern "C" fn(c_int, *mut u64, *mut c_int, *mut c_int, *mut c_char, usize) -> c_int,
+    >,
     pub gpu_cc: unsafe extern "C" fn(c_int, *mut c_int) -> c_int,
     pub gpu_open: unsafe extern "C" fn(c_int, *mut Gpu) -> c_int,
     pub gpu_close: unsafe extern "C" fn(Gpu),
@@ -168,20 +173,35 @@ impl Api {
     /// copy inside the binary (unless NS_LIB_FROM_DISK=1), else the library beside the executable, else in `dist/` of
     /// the working directory.
     pub fn load(kind: &str) -> Result<Api, String> {
-        let name = format!("libnextrocm-{kind}.so");
-        if std::env::var_os("NEXTROCM_LIB").is_none() && !from_disk() {
-            if let Some(api) = Api::load_embedded(&name)? {
-                return Ok(api);
+        if let Some(p) = std::env::var_os("NEXTROCM_LIB") {
+            return Api::load_from(&PathBuf::from(p));
+        }
+        for candidate in [kind, "runtime"] {
+            let name = format!("libnextrocm-{candidate}.so");
+            if !from_disk() {
+                if let Some(api) = Api::load_embedded(&name)? {
+                    return Ok(api);
+                }
+            }
+            if let Some(beside) = std::env::current_exe()
+                .ok()
+                .and_then(|e| e.parent().map(|d| d.join(&name)))
+            {
+                if beside.exists() {
+                    return Api::load_from(&beside);
+                }
+            }
+            let p = PathBuf::from("dist").join(&name);
+            if p.exists() {
+                return Api::load_from(&p);
+            }
+            if candidate == "runtime" {
+                break;
             }
         }
-        let p = std::env::var_os("NEXTROCM_LIB")
-            .map(PathBuf::from)
-            .or_else(|| {
-                let exe = std::env::current_exe().ok()?;
-                let beside = exe.parent()?.join(&name);
-                beside.exists().then_some(beside)
-            });
-        Api::load_from(&p.unwrap_or_else(|| PathBuf::from("dist").join(&name)))
+        Err(format!(
+            "no libnextrocm-{kind}.so or legacy libnextrocm-runtime.so; set NEXTROCM_LIB"
+        ))
     }
 
     /// The kind's library out of the binary (None when this binary has none): the libraries it needs by name first
@@ -243,6 +263,14 @@ impl Api {
             gpu_name: sym!("ns_gpu_name"),
             gpu_pci: sym!("ns_gpu_pci"),
             gpu_units: sym!("ns_gpu_units"),
+            gpu_props: {
+                let p = unsafe { dlsym(h, c"ns_gpu_props".as_ptr()) };
+                if p.is_null() {
+                    None
+                } else {
+                    Some(unsafe { std::mem::transmute(p) })
+                }
+            },
             gpu_cc: sym!("ns_gpu_cc"),
             gpu_open: sym!("ns_gpu_open"),
             gpu_close: sym!("ns_gpu_close"),
@@ -292,32 +320,15 @@ impl Api {
     /// `kernels/<kind>/<arch>/silo/`, opened on demand. None when there is none or `NS_SILO=0` (the shared kernels
     /// then); an error when the file is there but does not open.
     pub fn silo(&self, arch: &str) -> Result<Option<Silo>, String> {
-        self.silo_for(arch, 0)
-    }
-
-    /// A model's silo for a card of compute capability `cc` (86, 120): `libnextrocm-<arch>.sm<cc>.so` when the silo
-    /// is built a card at a time (its `per-card` file: kernels tuned to each card, an FP8 path on the one that has
-    /// it), else the one built for every card; `cc` 0: the latter.
-    pub fn silo_for(&self, arch: &str, cc: u32) -> Result<Option<Silo>, String> {
         if std::env::var("NS_SILO").is_ok_and(|v| v == "0") {
             return Ok(None);
         }
         // a model card's silo: NS_SILO_NAME another silo of this engine's ABI (default: the architecture's own),
         // NS_SILO_REQUIRED=1 no load without it (not the shared kernels)
-        let name = std::env::var("NS_SILO_NAME")
-            .ok()
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| arch.to_string());
+        let name = self.silo_name(arch);
         let required = std::env::var("NS_SILO_REQUIRED").is_ok_and(|v| v == "1");
-        let dir = std::env::var_os("NS_SILO_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.dir.join("silo"));
-        let card = dir.join(format!("libnextrocm-{name}.sm{cc}.so"));
-        let path = if cc > 0 && card.exists() {
-            card
-        } else {
-            dir.join(format!("libnextrocm-{name}.so"))
-        };
+        let dir = self.silo_dir();
+        let path = dir.join(format!("libnextrocm-{name}.so"));
         if !path.exists() {
             if required {
                 return Err(format!("{}: the model's silo is not built (NS_SILO_REQUIRED=1; kernels/build.sh builds the silos)", path.display()));
@@ -331,7 +342,145 @@ impl Api {
         if h.is_null() {
             return Err(format!("{}: {}", path.display(), dl_error()));
         }
-        Ok(Some(Silo { handle: h, path }))
+        Ok(Some(Silo {
+            handle: h,
+            path,
+            variant: None,
+        }))
+    }
+
+    /// The silo an architecture runs on: NS_SILO_NAME, else its own
+    pub fn silo_name(&self, arch: &str) -> String {
+        std::env::var("NS_SILO_NAME")
+            .ok()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| arch.to_string())
+    }
+
+    /// Where the silos and their variants are: NS_SILO_DIR, else silo/ beside the kind's library (or the executable)
+    pub fn silo_dir(&self) -> PathBuf {
+        std::env::var_os("NS_SILO_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.dir.join("silo"))
+    }
+
+    /// The variants built of silo `name` (`<silo dir>/libnextrocm-<name>@<variant>.so`, each with its manifest
+    /// `libnextrocm-<name>@<variant>.yml` beside it, `variant.rs`), by name. A library without its manifest, or with
+    /// one that does not read, is an error: a variant never applies on a guess.
+    pub fn silo_variants(&self, name: &str) -> Result<Vec<variant::VariantFile>, String> {
+        let prefix = format!("libnextrocm-{name}@");
+        let mut out = Vec::new();
+        let entries = match std::fs::read_dir(self.silo_dir()) {
+            Ok(v) => v,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.to_string()),
+        };
+        for entry in entries {
+            let e = entry.map_err(|e| e.to_string())?;
+            let f = e.file_name().to_string_lossy().into_owned();
+            let Some(v) = f.strip_prefix(&prefix).and_then(|r| r.strip_suffix(".so")) else {
+                continue;
+            };
+            if v.is_empty()
+                || !v
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+            {
+                return Err(format!("invalid silo variant name {v:?}"));
+            }
+            let yml = e.path().with_extension("yml");
+            let text = std::fs::read_to_string(&yml).map_err(|x| {
+                format!(
+                    "{}: {x} (a variant's manifest: kernels/build.sh copies it there)",
+                    yml.display()
+                )
+            })?;
+            let manifest =
+                variant::parse_manifest(&text).map_err(|x| format!("{}: {x}", yml.display()))?;
+            out.push(variant::VariantFile {
+                name: v.to_string(),
+                path: e.path(),
+                manifest,
+            });
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    /// `base` with a variant's library over it (`Silo::symbol`: the variant's op when it has one, else the base's).
+    /// Opened locally: its ops have the default silo's names, and must not stand in for the default's in the
+    /// process's global scope (nor the default's for its own: it is linked -Bsymbolic).
+    pub fn with_variant(&self, base: &Silo, v: &variant::VariantFile) -> Result<Silo, String> {
+        let c = CString::new(v.path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+        // SAFETY: dlopen with a valid C string; the handle is checked. Its undefined symbols resolve against the
+        // kind's library (global).
+        let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
+        if h.is_null() {
+            return Err(format!("{}: {}", v.path.display(), dl_error()));
+        }
+        Ok(Silo {
+            handle: base.handle,
+            path: base.path.clone(),
+            variant: Some(VariantLib {
+                name: v.name.clone(),
+                handle: h,
+                path: v.path.clone(),
+            }),
+        })
+    }
+
+    /// Read actual HIP properties without opening a GPU context. Older libraries leave optional fields unknown.
+    pub fn device_info(&self, index: usize) -> Result<variant::DeviceInfo, String> {
+        let i = c_int::try_from(index).map_err(|_| "GPU index exceeds ABI range")?;
+        let mut name = [0 as c_char; 256];
+        if unsafe { (self.gpu_name)(i, name.as_mut_ptr(), name.len()) } != 0 {
+            return Err(self.error());
+        }
+        let (mut units, mut mhz) = (0, 0);
+        if unsafe { (self.gpu_units)(i, &mut units, &mut mhz) } != 0 {
+            return Err(self.error());
+        }
+        if units < 0 || mhz < 0 {
+            return Err("negative GPU properties".into());
+        }
+        let mut d = variant::DeviceInfo {
+            index,
+            name: unsafe { CStr::from_ptr(name.as_ptr()) }
+                .to_string_lossy()
+                .into_owned(),
+            units: units as u32,
+            mhz: mhz as u32,
+            ..Default::default()
+        };
+        if let Some(f) = self.gpu_props {
+            let (mut total, mut wave, mut integrated) = (0u64, 0, 0);
+            let mut gfx = [0 as c_char; 256];
+            if unsafe {
+                f(
+                    i,
+                    &mut total,
+                    &mut wave,
+                    &mut integrated,
+                    gfx.as_mut_ptr(),
+                    gfx.len(),
+                )
+            } != 0
+            {
+                return Err(self.error());
+            }
+            if total == 0 || wave <= 0 || !matches!(integrated, 0 | 1) {
+                return Err("invalid GPU properties".into());
+            }
+            d.vram_mb = Some(total >> 20);
+            d.wave_size = Some(wave as u32);
+            d.integrated = Some(integrated == 1);
+            d.gfx = Some(
+                unsafe { CStr::from_ptr(gfx.as_ptr()) }
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        Ok(d)
     }
 
     /// The reason of the last failed call on this thread.
@@ -343,10 +492,19 @@ impl Api {
     }
 }
 
-/// A model's silo library (`Api::silo`): its tuned kernels, bound by the engine by name
+/// A model's silo library (`Api::silo`): its tuned kernels, bound by the engine by name; with a variant
+/// (`Api::with_variant`) the variant's ops over the default silo's
 pub struct Silo {
     handle: *mut c_void,
     pub path: PathBuf,
+    variant: Option<VariantLib>,
+}
+
+/// A silo variant's library (dist/silo/libnextrocm-<arch>@<name>.so)
+struct VariantLib {
+    name: String,
+    handle: *mut c_void,
+    path: PathBuf,
 }
 
 // SAFETY: a handle to a library that stays loaded for the process's life.
@@ -354,12 +512,157 @@ unsafe impl Send for Silo {}
 unsafe impl Sync for Silo {}
 
 impl Silo {
-    /// A symbol of the silo by name (null when it has none)
+    /// A symbol of the silo by name (null when it has none): the variant's when it has one, else the default silo's
     pub fn symbol(&self, name: &str) -> *mut c_void {
         let Ok(n) = CString::new(name) else {
             return std::ptr::null_mut();
         };
+        if let Some(v) = &self.variant {
+            // SAFETY: a lookup in the variant's own handle (opened locally: its symbols, not the default silo's).
+            let p = unsafe { dlsym(v.handle, n.as_ptr()) };
+            if !p.is_null() {
+                return p;
+            }
+        }
         // SAFETY: a lookup in the silo's handle; it stays open for the process.
         unsafe { dlsym(self.handle, n.as_ptr()) }
+    }
+
+    /// The variant over the default silo (its name, its library); None for the default silo alone
+    pub fn variant(&self) -> Option<(&str, &Path)> {
+        self.variant
+            .as_ref()
+            .map(|v| (v.name.as_str(), v.path.as_path()))
+    }
+}
+
+#[cfg(test)]
+mod loader_tests {
+    use super::*;
+    use std::process::Command;
+    fn compile(dir: &Path, name: &str, code: &str) -> PathBuf {
+        let source = dir.join(format!("{name}.c"));
+        let library = dir.join(format!("{name}.so"));
+        std::fs::write(&source, code).unwrap();
+        let result = Command::new("cc")
+            .args(["-shared", "-fPIC"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&library)
+            .output()
+            .expect("CPU C compiler required for loader contract test");
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        library
+    }
+    #[test]
+    #[ignore = "subprocess-only loader isolation"]
+    fn loader_child() {
+        let expected = std::env::var("NEXTROCM_TEST_EXPECT").expect("child contract");
+        let result = Api::load("image");
+        if expected == "error" {
+            assert!(result.is_err());
+            return;
+        }
+        let api = result.unwrap();
+        let name = api.path.file_name().unwrap().to_string_lossy();
+        assert!(match expected.as_str() {
+            "runtime" => name == "libnextrocm-runtime.so",
+            "image" => name == "libnextrocm-image.so",
+            "override" => name == "new.so",
+            _ => false,
+        });
+    }
+    #[test]
+    fn optional_properties_and_local_variant_precedence() {
+        let dir = std::env::temp_dir().join(format!("nextrocm-loader-test-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let mut code=String::from("#include <stdint.h>\n#include <stddef.h>\n#include <string.h>\nconst char* ns_last_error(void){return \"fixture error\";}\nint ns_gpu_name(int i,char*p,size_t n){(void)i;if(n<9)return 1;memcpy(p,\"AMD test\",9);return 0;}\nint ns_gpu_units(int i,int*u,int*m){(void)i;*u=12;*m=1500;return 0;}\nint test_op(void){return 11;}\nint base_only(void){return 13;}\n");
+        // Only properties and the test operations are called; remaining ABI exports are presence stubs.
+        for name in include_str!("lib.rs")
+            .split("sym!(\"")
+            .skip(1)
+            .filter_map(|s| s.split('"').next())
+        {
+            if !["ns_last_error", "ns_gpu_name", "ns_gpu_units"].contains(&name) {
+                code.push_str(&format!("void {name}(void){{}}\n"));
+            }
+        }
+        let old_path = compile(&dir, "old", &code);
+        let old = Api::load_from(&old_path).unwrap();
+        let d = old.device_info(0).unwrap();
+        assert_eq!(d.units, 12);
+        assert_eq!(d.mhz, 1500);
+        assert_eq!(d.gfx, None);
+        assert_eq!(d.vram_mb, None);
+        assert!(old.device_info(usize::MAX).is_err());
+        code.push_str("int ns_gpu_props(int i,uint64_t*t,int*w,int*g,char*p,size_t n){(void)i;if(n<7)return 1;*t=4294967296ULL;*w=64;*g=0;memcpy(p,\"gfx803\",7);return 0;}\n");
+        let new_path = compile(&dir, "new", &code);
+        let new = Api::load_from(&new_path).unwrap();
+        let d = new.device_info(0).unwrap();
+        assert_eq!(d.gfx.as_deref(), Some("gfx803"));
+        assert_eq!(d.wave_size, Some(64));
+        assert_eq!(d.integrated, Some(false));
+        assert_eq!(d.vram_mb, Some(4096));
+        let variant_path = compile(&dir, "delta", "int test_op(void){return 22;}\n");
+        let base = Silo {
+            handle: old.handle,
+            path: old_path,
+            variant: None,
+        };
+        let delta = new
+            .with_variant(
+                &base,
+                &variant::VariantFile {
+                    name: "delta".into(),
+                    path: variant_path,
+                    manifest: Default::default(),
+                },
+            )
+            .unwrap();
+        type Op = unsafe extern "C" fn() -> i32;
+        let call = |p: *mut c_void| {
+            assert!(!p.is_null());
+            unsafe { std::mem::transmute::<*mut c_void, Op>(p)() }
+        };
+        assert_eq!(call(base.symbol("test_op")), 11);
+        assert_eq!(call(delta.symbol("test_op")), 22);
+        assert_eq!(call(delta.symbol("base_only")), 13);
+        assert!(delta.symbol("absent_operation").is_null());
+        assert_eq!(delta.variant().unwrap().0, "delta");
+        // Child processes isolate environment/current-directory loader precedence from parallel tests.
+        let dist = dir.join("dist");
+        std::fs::create_dir(&dist).unwrap();
+        std::fs::copy(&new_path, dist.join("libnextrocm-runtime.so")).unwrap();
+        let run = |override_path: Option<&Path>, expected: &str| {
+            let mut c = Command::new(std::env::current_exe().unwrap());
+            c.args(["--exact", "loader_tests::loader_child", "--ignored"])
+                .current_dir(&dir)
+                .env("NS_LIB_FROM_DISK", "1")
+                .env("NEXTROCM_TEST_EXPECT", expected)
+                .env_remove("NEXTROCM_LIB");
+            if let Some(p) = override_path {
+                c.env("NEXTROCM_LIB", p);
+            }
+            let o = c.output().unwrap();
+            assert!(
+                o.status.success(),
+                "{} {}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+        };
+        run(None, "runtime");
+        let kind = dist.join("libnextrocm-image.so");
+        std::fs::copy(&new_path, &kind).unwrap();
+        run(None, "image");
+        std::fs::write(&kind, b"broken").unwrap();
+        run(None, "error");
+        run(Some(&new_path), "override");
+        run(Some(&dir.join("missing.so")), "error");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
