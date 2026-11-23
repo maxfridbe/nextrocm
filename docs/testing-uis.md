@@ -82,3 +82,13 @@ node --experimental-default-type=module wfe/test/audio-transcription-live.mjs \
 ```
 
 The harness uploads the real WAV through the compiled UI action and checks the returned transcript against the expected file, ignoring only surrounding whitespace. It also checks text/JSON download content and input identities. It uses a Node FileReader adapter, not browser automation. The audio interaction checks and two live UI-action runs passed with `whisper-ggml-tiny.en` on the retained 11-second JFK recording. Both returned the exact expected transcript (apart from permitted surrounding whitespace), two timed segments and matching text/JSON downloads. Reported recognition times were 0.231 and 0.223 seconds; these are this short fixture’s request times, not a general throughput benchmark. Both isolated server runs exited successfully with their process groups drained and sampled DRM allocations peaking at 363,450,368 bytes. The final check found the GPU idle, no KFD compute processes and automatic power management restored. This validates the compiled UI-to-native recognition workflow for that fixture; it does not establish general ASR accuracy, browser rendering or production deployment.
+
+## Deployed on Mycroft
+
+The updated interfaces are deployed at <http://mycroft:8000/>. Use
+[ESRGAN](http://mycroft:8000/open/real-esrgan/) or
+[Whisper transcription](http://mycroft:8000/open/whisper-ggml-tiny.en/).
+Both were tested through that deployed front door on the 680M. The
+[deployment record](deployments/mycroft-2026-11-23.md) includes results and rollback
+instructions; test workers were unloaded afterward so normal model loading
+remains available.

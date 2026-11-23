@@ -1,0 +1,113 @@
+{
+  "source_commit": "50993a59f8204009ab22896df6bfa5a05720c582",
+  "host": "mycroft",
+  "target": "gfx1035",
+  "date": "2026-11-23",
+  "installed_artifacts": {
+    "nextrocm": "8493cf6483dab367188ebd6a79696d609d9ebd5d196c65176321c3545916cb93",
+    "libnextrocm-audio.so": "f8bd4933f1d9769d91c1e89fa275f1e1ae9a8a022f7dcb55b79b6b42cf0942db",
+    "libnextrocm-image.so": "665e6f1140a3b92f52f5032919d143cb95a95c6fb456ea0f26668a98450c98c9",
+    "libnextrocm-llm.so": "4c50040c06c75be81977fba40daf3caa1c5f85495cd2416502a3ec36d200ea13",
+    "libnextrocm-model3d.so": "04d9d999bfcb70bf8ac064737d23d9fe987bfe79d5bc1886038f666f609f3df8",
+    "libnextrocm-runtime.so": "15e30e3a8d99c99fd5d44e0a34595cf44b2fd50a2519481645eefb0d7c586dc8",
+    "silo/libnextrocm-stablelm.so": "cfd00ac266a3f8f3912ac99e3d868c869402fa211e675a53bd4372fc2b928fa5",
+    "silo/libnextrocm-qwen35.so": "c34612d9a2adc2ca0943cb987b870330ea70dead2795a32486edeee641b2e394",
+    "silo/libnextrocm-qwen3moe.so": "b196ffc8476e47fbabebcfd294fbbf4b39af2c87ac6b5822e249c6588becb832",
+    "silo/libnextrocm-inkling2.so": "ef8810abf8b82a29146eed9c3e7f044173f68cd9a11d14bff237b2ce2943ae12",
+    "silo/libnextrocm-rembg.so": "b8e73abb5ccbfbe454d4761f2f2c8ae7549a3e926453ba5b42ab1d5533763d43",
+    "silo/libnextrocm-upscale.so": "10bb6cc3ce07aca23ac11254d66353cf1cc9db29923f91315c770c4798f897e3",
+    "silo/libnextrocm-sd15.so": "068efb42123a9c27c4ad840cd3cfd5bd166273085429b0f53bc238257f572745",
+    "silo/libnextrocm-starvector.so": "7bac5b07710478e94d573b8095a615d8445004db905ea170cdd6f1754c4be649",
+    "silo/libnextrocm-rignet.so": "5ae88e76c15c8449ace6980b04d666cb0f6eb17ed4db82fb6f5e49c1f11a8089",
+    "silo/libnextrocm-minimaxmusic3.so": "b41360d9f01dce1e92fc04e68a585bc3e335393fb9898057a25a9d622b5f8b48",
+    "silo/libnextrocm-qwen3tts.so": "fee7da1a8997e8b0a5459d740bc94d93712be35beba6590efb52722e03ec6555",
+    "silo/libnextrocm-voxcpm2.so": "9071a5bc2b53a45714ac4ac394a7f7e7daae91c487f6ac7d31058c7defa60b41",
+    "silo/libnextrocm-whisper.so": "7de29c348ab6745a6c3ce3fcf8612a97e1589065c9477d529f27d34138ca0f8e",
+    "silo/libnextrocm-lowvram.so": "94dcbab311cb1974fb082b29ab744183928f32892003c908e54c9fe15e27e574",
+    "silo/libnextrocm-qwen3vl.so": "42aac17dd1151aca6df1449226aba6a52e60fb479c848e1be2ba5dd88d9c1a5f",
+    "silo/libnextrocm-qwenimage21.so": "432404d58785d34ac7016e6a29d599e47e17595846501347b50f120595f97728",
+    "silo/libnextrocm-paddleocrvl.so": "17de9e05372c3a3f389b91a8e51400fda17e5ea0a36a86deed7d88b93d0169fa",
+    "silo/libnextrocm-vibevoice.so": "fa62cd019ea89997e01d5646967d13fdc48d251b1cbbe83c30ed833742bc3ef0"
+  },
+  "service_active": true,
+  "registry_unchanged": true,
+  "registered_models": 31,
+  "token_unchanged": true,
+  "maintenance": null,
+  "test_workers_unloaded": true,
+  "gpu_busy_percent": 0,
+  "power_mode": "auto",
+  "hardware_tests": {
+    "libraries": {
+      "pass": true,
+      "cap_bytes": 536870912,
+      "max_drm_allocated_bytes": 151248896,
+      "group_verified_empty": true,
+      "report_sha256": "141c0f1d103a705d9b769fec93db7aa0c92f1ee219e3e7ef1cd05029b8421761"
+    },
+    "core": {
+      "pass": true,
+      "cap_bytes": 536870912,
+      "max_drm_allocated_bytes": 149037056,
+      "group_verified_empty": true,
+      "report_sha256": "3d79cd9991776487d75d931fac0291d839fbe2c4282ee1d9a64f732997d466e1"
+    },
+    "esrgan-rgb": {
+      "pass": true,
+      "cap_bytes": 536870912,
+      "max_drm_allocated_bytes": 203763712,
+      "group_verified_empty": true,
+      "report_sha256": "41b39ac0c2dc917c71994a1c27aebb140a1ae0c86b474442ada2e1b2106fd28a"
+    },
+    "esrgan-rgba-edge": {
+      "pass": true,
+      "cap_bytes": 536870912,
+      "max_drm_allocated_bytes": 205864960,
+      "group_verified_empty": true,
+      "report_sha256": "8c5558eb6bc5c145da54be24abd61cf189466de8fb0f7fd9989c18869e9904fe"
+    },
+    "esrgan-tiny": {
+      "pass": true,
+      "cap_bytes": 536870912,
+      "max_drm_allocated_bytes": 191184896,
+      "group_verified_empty": true,
+      "report_sha256": "189e05d7c4f61b4d7061dba25fa0d0f58b3070cd4e9ecc4900ff4cd2e80793da"
+    }
+  },
+  "live_service_monitor": {
+    "samples": 709,
+    "max_summed_process_drm_bytes": 511115264,
+    "min_host_available_bytes": 13527687168,
+    "scope": "sampled deployed nextrocm processes, conservative sum of per-process DRM VRAM+GTT; not allocator counters or continuous bound"
+  },
+  "ui_actions": {
+    "live-image-rgb": {
+      "status": "PASS",
+      "input_sha256": "53e722d9cd64b5820180a4882be68df53c58fab5adc5a6e6401bacbfd7f5bb10",
+      "report_sha256": "b235ff1d4b1f8dbab9f3d1f0eb1a601898102f6ed750cd8c158f6a9e6bd55760",
+      "scope": "Compiled UI upload/actions/API/result/history against a live server; Node upload adapter, no browser rendering or pixel-accuracy claim"
+    },
+    "live-image-rgba": {
+      "status": "PASS",
+      "input_sha256": "0640527f680252343b539ed4d77620402b2c5a630bead09995c9f379f3ec388b",
+      "report_sha256": "49afc5e8916ef7c89ca5ca78151ff3cdf4370f4ed200f4388b9314a7ff017557",
+      "scope": "Compiled UI upload/actions/API/result/history against a live server; Node upload adapter, no browser rendering or pixel-accuracy claim"
+    },
+    "live-audio": {
+      "status": "PASS",
+      "input_sha256": "0c397b12d7dbdd89e4fd0d9a0840c14a2c5c3707758562755cda96a931b25a91",
+      "report_sha256": "78872824d2eae4c8123cd2af6b4bef96cabcf2ed939cf8a108bf23cc9d64a26a",
+      "scope": "Live compiled UI upload/transcription/result/download actions, Node FileReader adapter; no browser rendering or general ASR accuracy claim"
+    }
+  },
+  "independent_audits": {
+    "native-live-independent-maxwell.json": "c41905c4d30db3a5fe141250a986ac368f55001cf37bc0a6481eab0b1864fb01",
+    "ui-independent-avicenna-audit.json": "2b304ad1a7ec06b27a17de3193fa5ad2759b2c2ebeefd6b747cd451bacc533e9"
+  },
+  "scope": "gfx1035 packaging/core, ESRGAN retained-reference pixels and Whisper retained-transcript/live compiled UI actions; not visual browser automation or all-model numerical/performance admission. Service telemetry context remains running.",
+  "final_input_identities": {
+    "pass": true,
+    "file_count": 38,
+    "receipt_sha256": "b6f211d1b9687c81e6c023814deceb16a28c728c5c5da1b64a9590029031d958"
+  }
+}

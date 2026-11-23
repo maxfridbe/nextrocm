@@ -106,3 +106,11 @@ regression and application-action check, not a general ASR accuracy study or
 visual-browser test. Both isolated servers exited normally and their process
 groups drained. Final device observation was automatic power policy, zero GPU
 busy and no KFD processes.
+
+## Mycroft deployment follow-up
+
+The completed branch was subsequently deployed and tested on Mycroft’s gfx1035
+680M. Its existing port-8000 service, registry and authentication were preserved.
+See the [deployment and rollback record](deployments/mycroft-2026-11-23.md) for
+actual library/core execution and ESRGAN/Whisper front-door UI checks. This
+subsequent execution extends the compile-only gfx1035 evidence above.
