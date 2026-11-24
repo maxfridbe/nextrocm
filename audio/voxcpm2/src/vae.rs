@@ -69,6 +69,85 @@ pub struct Vae {
     pub hop_in: usize,
 }
 
+/// Largest live activation in the encoder. Downsampling lengths are exact because
+/// the caller pads the input to the complete encoder hop. Every residual unit
+/// preserves its channel count and length; no convolution uses these buffers as
+/// hidden scratch space.
+fn encoder_workspace(
+    samples: usize,
+    input_channels: usize,
+    blocks: impl IntoIterator<Item = (usize, usize)>,
+    latent_channels: usize,
+) -> Result<usize> {
+    let mut length = samples;
+    let mut widest = samples.max(crate::budget::product(&[input_channels, samples])?);
+    for (channels, stride) in blocks {
+        if stride == 0 || length == 0 || !length.is_multiple_of(stride) {
+            return Err(Error(
+                "AudioVAE encoder input must align to every stride".into(),
+            ));
+        }
+        length /= stride;
+        widest = widest.max(crate::budget::product(&[channels, length])?);
+    }
+    Ok(widest.max(crate::budget::product(&[latent_channels, length])?))
+}
+
+/// Input-sample reach of an output at index zero, relative to its stride grid.
+/// Strided encoder convolutions have a right reach as well as a causal left pad.
+#[derive(Default)]
+struct EncoderReach {
+    past: usize,
+    future: usize,
+    jump: usize,
+}
+
+impl EncoderReach {
+    fn new() -> Self {
+        Self {
+            jump: 1,
+            ..Self::default()
+        }
+    }
+
+    fn causal(&mut self, kernel: usize, dilation: usize) -> Result<()> {
+        let width = kernel
+            .checked_sub(1)
+            .ok_or_else(|| Error("zero encoder kernel".into()))?;
+        if dilation == 0 {
+            return Err(Error("zero encoder dilation".into()));
+        }
+        self.past = crate::budget::sum(&[
+            self.past,
+            crate::budget::product(&[width, dilation, self.jump])?,
+        ])?;
+        Ok(())
+    }
+
+    fn down(&mut self, kernel: usize, stride: usize) -> Result<()> {
+        if stride == 0 {
+            return Err(Error("zero encoder stride".into()));
+        }
+        let left = kernel
+            .checked_sub(stride)
+            .ok_or_else(|| Error("encoder kernel smaller than stride".into()))?;
+        self.past = crate::budget::sum(&[self.past, crate::budget::product(&[left, self.jump])?])?;
+        self.future = crate::budget::sum(&[
+            self.future,
+            crate::budget::product(&[stride - 1, self.jump])?,
+        ])?;
+        self.jump = crate::budget::product(&[self.jump, stride])?;
+        Ok(())
+    }
+
+    fn context(&self, hop: usize) -> Result<usize> {
+        if hop == 0 || self.jump != hop || self.future != hop - 1 {
+            return Err(Error("inconsistent encoder hop or right context".into()));
+        }
+        crate::budget::product(&[self.past.div_ceil(hop), hop])
+    }
+}
+
 /// The weight of a weight-normalized layer: g * v / |v| (the norm over all but the first dimension)
 fn wn(t: &HashMap<String, Tensor>, p: &str) -> Result<(Vec<f32>, Vec<usize>)> {
     let miss = |n: &str| Error(format!("the AudioVAE has no {p}.{n}"));
@@ -340,10 +419,73 @@ impl Vae {
         Ok(out)
     }
 
-    /// 16 kHz samples (a multiple of the hop long) to latents [64, t] (channels first)
+    /// Exact left context, rounded up to the encoder's sample grid. The right
+    /// reach is hop-1, so a chunk ending on that grid includes every needed sample.
+    pub fn encoder_context_samples(&self) -> Result<usize> {
+        let mut reach = EncoderReach::new();
+        reach.causal(self.e_in.k, 1)?;
+        for block in &self.e_blocks {
+            for unit in &block.units {
+                reach.causal(unit.dw.k, unit.dil)?;
+                reach.causal(unit.pw.k, 1)?;
+            }
+            reach.down(block.down.k, block.stride)?;
+        }
+        reach.causal(self.e_mu.k, 1)?;
+        reach.context(self.hop_in)
+    }
+
+    /// Encode the entire recording with bounded device workspace: 125 output
+    /// latents (5 seconds at the canonical 25 Hz), plus exact preceding context.
     pub fn encode(&self, ops: &Ops, wav: &[f32]) -> Result<Vec<f32>> {
-        let _profile_stage = ops.stage("vae_encode");
-        let g = &ops.gpu;
+        self.encode_chunked(ops, wav, 125)
+    }
+
+    /// Same encoder operations on overlapping, hop-aligned segments. Only context
+    /// outputs are discarded; every requested latent is kept in channel-major order.
+    pub fn encode_chunked(&self, ops: &Ops, wav: &[f32], chunk: usize) -> Result<Vec<f32>> {
+        self.validate_encoder_input(wav)?;
+        if chunk == 0 {
+            return Err(Error("zero encoder chunk".into()));
+        }
+        let context = self.encoder_context_samples()? / self.hop_in;
+        let frames = wav.len() / self.hop_in;
+        if frames <= chunk {
+            return self.encode_unchunked(ops, wav);
+        }
+        let size = crate::budget::product(&[self.latent, frames])?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(size)
+            .map_err(|e| Error(format!("encoder output allocation: {e}")))?;
+        out.resize(size, 0.0);
+        // One admission and three allocations for the entire recording. Holding
+        // the workspace avoids repeated HIP allocation/free-pool churn and never
+        // counts an already-live workspace as another planned allocation.
+        let max_frames = frames.min(crate::budget::sum(&[chunk, context])?);
+        let workspace = self
+            .allocate_encoder_workspace(ops, crate::budget::product(&[max_frames, self.hop_in])?)?;
+        let mut start = 0;
+        while start < frames {
+            let end = start + chunk.min(frames - start);
+            let from = start.saturating_sub(context);
+            let part = self.encode_in_workspace(
+                ops,
+                &wav[from * self.hop_in..end * self.hop_in],
+                &workspace,
+            )?;
+            let part_frames = end - from;
+            let skip = start - from;
+            for channel in 0..self.latent {
+                out[channel * frames + start..channel * frames + end].copy_from_slice(
+                    &part[channel * part_frames + skip..channel * part_frames + part_frames],
+                );
+            }
+            start = end;
+        }
+        Ok(out)
+    }
+
+    fn validate_encoder_input(&self, wav: &[f32]) -> Result<()> {
         let n = wav.len();
         if self.hop_in == 0
             || n == 0
@@ -352,22 +494,91 @@ impl Vae {
         {
             return Err(Error(format!("{n} samples: a multiple of {}", self.hop_in)));
         }
-        let widest = crate::budget::product(&[self.e_in.co, n, 2])?;
+        // The residual additions and the final readback require these shapes;
+        // reject incompatible checkpoints before allocating or enqueueing work.
+        let mut channels = self.e_in.co;
+        if self.e_in.ci != 1 || channels == 0 {
+            return Err(Error("invalid AudioVAE encoder input channels".into()));
+        }
+        for block in &self.e_blocks {
+            if block.stride == 0
+                || block.down.k < block.stride
+                || block.down.ci != channels
+                || block.down.co == 0
+                || block.units.iter().any(|u| {
+                    u.dw.ci != channels
+                        || u.dw.co != channels
+                        || u.pw.ci != channels
+                        || u.pw.co != channels
+                })
+            {
+                return Err(Error("invalid AudioVAE encoder block geometry".into()));
+            }
+            channels = block.down.co;
+        }
+        if self.e_mu.ci != channels || self.e_mu.co != self.latent || self.latent == 0 {
+            return Err(Error("invalid AudioVAE encoder latent geometry".into()));
+        }
+        Ok(())
+    }
+
+    /// Diagnostic full-recording control; production uses `encode`'s bounded chunks.
+    /// Retains the original native operations and the same memory admission check.
+    pub fn encode_unchunked(&self, ops: &Ops, wav: &[f32]) -> Result<Vec<f32>> {
+        self.validate_encoder_input(wav)?;
+        let workspace = self.allocate_encoder_workspace(ops, wav.len())?;
+        self.encode_in_workspace(ops, wav, &workspace)
+    }
+
+    fn allocate_encoder_workspace(&self, ops: &Ops, n: usize) -> Result<[DevBuf; 3]> {
+        let g = &ops.gpu;
+        let widest = encoder_workspace(
+            n,
+            self.e_in.co,
+            self.e_blocks.iter().map(|b| (b.down.co, b.stride)),
+            self.e_mu.co,
+        )?;
         crate::budget::admit(
             g,
             crate::budget::product(&[3, widest, 4])?,
             "AudioVAE workspace",
         )?;
-        let (a, b, c) = (
+        Ok([
             DevBuf::f32(g, widest)?,
             DevBuf::f32(g, widest)?,
             DevBuf::f32(g, widest)?,
-        );
+        ])
+    }
+
+    /// Each operation writes its entire active extent. Tail bytes from a longer
+    /// segment are never read; the final sync/readback completes before reuse.
+    fn encode_in_workspace(
+        &self,
+        ops: &Ops,
+        wav: &[f32],
+        workspace: &[DevBuf; 3],
+    ) -> Result<Vec<f32>> {
+        let _profile_stage = ops.stage("vae_encode");
+        let g = &ops.gpu;
+        let n = wav.len();
+        let needed = crate::budget::product(&[
+            4,
+            encoder_workspace(
+                n,
+                self.e_in.co,
+                self.e_blocks.iter().map(|b| (b.down.co, b.stride)),
+                self.e_mu.co,
+            )?,
+        ])?;
+        if workspace.iter().any(|buffer| buffer.len < needed) {
+            return Err(Error("encoder workspace is too small".into()));
+        }
+        let [a, b, c] = workspace;
         b.write(0, &crate::talker_bytes(wav))?;
         self.conv(ops, &self.e_in, b.fp(), n, 1, a.fp())?;
         let (mut l, mut ch) = (n, self.e_in.co);
         for blk in &self.e_blocks {
-            self.units(ops, &blk.units, ch, l, &a, &b, &c)?;
+            self.units(ops, &blk.units, ch, l, a, b, c)?;
             ops.snake(a.fp(), ch, l, &blk.act, b.fp())?;
             l = ops.conv_strided(
                 b.fp(),
@@ -392,6 +603,55 @@ impl Vae {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn encoder_context_covers_left_and_right_reach() {
+        let mut reach = EncoderReach::new();
+        reach.causal(7, 1).unwrap();
+        for stride in [2, 5, 8, 8] {
+            for dilation in [1, 3, 9] {
+                reach.causal(7, dilation).unwrap();
+                reach.causal(1, 1).unwrap();
+            }
+            reach.down(stride * 2, stride).unwrap();
+        }
+        reach.causal(3, 1).unwrap();
+        assert_eq!((reach.past, reach.future, reach.jump), (9272, 639, 640));
+        assert_eq!(reach.context(640).unwrap(), 9600);
+        assert!(reach.context(320).is_err());
+        assert!(EncoderReach::new().causal(0, 1).is_err());
+        assert!(EncoderReach::new().causal(7, 0).is_err());
+        assert!(EncoderReach::new().down(7, 0).is_err());
+        assert!(EncoderReach::new().down(3, 4).is_err());
+        let mut huge = EncoderReach {
+            past: usize::MAX,
+            future: 0,
+            jump: 1,
+        };
+        assert!(huge.causal(2, 1).is_err());
+        let huge = EncoderReach {
+            past: usize::MAX,
+            future: 1,
+            jump: 2,
+        };
+        assert!(huge.context(2).is_err());
+    }
+
+    #[test]
+    fn encoder_workspace_covers_each_stage_without_doubling() {
+        // 16 seconds at 16 kHz: the first stride doubles channels but halves
+        // length. Subsequent stages shrink, so the original 2x reserve was unused.
+        let n = 256_000;
+        let blocks = [(256, 2), (512, 5), (1024, 8), (2048, 8)];
+        assert_eq!(encoder_workspace(n, 128, blocks, 64).unwrap(), 128 * n);
+        assert_eq!(encoder_workspace(640, 128, blocks, 64).unwrap(), 128 * 640);
+        let reuse = encoder_workspace((125 + 15) * 640, 128, blocks, 64).unwrap();
+        assert_eq!(crate::budget::product(&[3, reuse, 4]).unwrap(), 137_625_600);
+        assert_eq!(encoder_workspace(8, 1, [(32, 2)], 64).unwrap(), 256);
+        assert!(encoder_workspace(641, 128, blocks, 64).is_err());
+        assert!(encoder_workspace(640, 128, [(256, 0)], 64).is_err());
+        assert!(encoder_workspace(usize::MAX, 128, [], 64).is_err());
+    }
+
     #[test]
     fn weight_norm_uses_all_nonoutput_axes() {
         let mut tensors = HashMap::new();

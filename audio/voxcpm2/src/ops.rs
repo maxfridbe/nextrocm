@@ -71,6 +71,13 @@ impl Ops {
         )
     }
 
+    /// Whether a wide INT8 product can reach half-weight staging. Keep staging
+    /// conservatively whenever flow's F16 override is enabled, even if a given
+    /// call's scope/shape would not select it. These controls are immutable.
+    pub(crate) fn needs_int8_half_weights(&self) -> bool {
+        int8_half_weights_needed(self.f32_rows, self.flow_f16_tiled)
+    }
+
     /// KV allocation width follows the immutable per-engine precision setting.
     pub fn kv_element_bytes(&self) -> usize {
         if self.f32_kv { 4 } else { 2 }
@@ -1030,9 +1037,24 @@ fn load_control(options: &LoadOptions, name: &str) -> Result<bool> {
     }
 }
 
+/// `Mat::apply_scoped` returns before reading `wh` for <=8 rows, or for
+/// F32_ROWS without a flow-tiled override. LINEAR_F16_TILED is considered only
+/// after that return, so it cannot require `wh` in the omitted-buffer case.
+pub(crate) fn int8_half_weights_needed(f32_rows: bool, flow_f16_tiled: bool) -> bool {
+    !f32_rows || flow_f16_tiled
+}
+
 #[cfg(test)]
 mod control_tests {
     use super::*;
+    #[test]
+    fn half_weight_staging_is_omitted_only_when_every_product_keeps_f32_rows() {
+        assert!(int8_half_weights_needed(false, false)); // legacy wide F16
+        assert!(int8_half_weights_needed(false, true));
+        assert!(int8_half_weights_needed(true, true)); // supported Flow may bypass F32
+        assert!(!int8_half_weights_needed(true, false)); // all scopes/shapes return early
+    }
+
     #[test]
     fn card_precision_controls_parse_without_gpu_or_environment_mutation() {
         let mut options = LoadOptions::default();

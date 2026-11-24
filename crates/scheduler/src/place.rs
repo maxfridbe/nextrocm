@@ -104,6 +104,19 @@ fn drain(host: &dyn Host, x: &Server, kind: &str, id: &str, job: Option<&str>) -
 /// One try at a server for the model (the kind's lock held while it lasts): a server, or why there is none yet (no card
 /// of its has the room, even with the idle models there stopped)
 pub fn place(host: &dyn Host, req: &PlaceReq) -> Result<Outcome, Fail> {
+    place_with_margin(host, req, MARGIN_MB)
+}
+
+/// Explicit administrator-selected spare memory. The host supplies uncapped model reservations;
+/// this function uses the same total for planning, eviction and waiting for actual free memory.
+pub fn place_with_margin(host: &dyn Host, req: &PlaceReq, margin_mb: u64) -> Result<Outcome, Fail> {
+    if margin_mb < 256 {
+        return Err((409, "memory margin must be at least 256 MiB".into()));
+    }
+    for g in &req.model.gpus {
+        req.need_mb.get(g).copied().unwrap_or(0).checked_add(margin_mb)
+            .ok_or_else(|| (409, "memory reservation plus margin overflows".into()))?;
+    }
     let m = req.model;
     let (id, kind, job) = (m.id.as_str(), m.kind.as_str(), req.job);
     if !m.enabled {
@@ -122,7 +135,7 @@ pub fn place(host: &dyn Host, req: &PlaceReq) -> Result<Outcome, Fail> {
         }
         return Ok(Outcome::Placed { slot: x.slot, port: x.port });
     }
-    let want = |g: usize| (req.need_mb.get(&g).copied().unwrap_or(0) + MARGIN_MB).max(req.asked_mb);
+    let want = |g: usize| (req.need_mb.get(&g).copied().unwrap_or(0) + margin_mb).max(req.asked_mb);
     let cards = &snap.cards;
     // a server that holds another model and could go now
     let idle_other = |x: &&Server| x.model.is_some() && x.model.as_deref() != Some(id) && !kept(x) && x.idle();

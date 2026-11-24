@@ -2,6 +2,23 @@
 
 The image page selects its controls from the loaded model's capabilities: image generation, upscaling, background removal or SVG conversion. A model must be installed and configured before starting its server; building the page does not download weights.
 
+## Speech with saved voices
+
+Open an installed speech model's audio page, choose a saved voice, enter the text to speak and choose a maximum duration. Generate the speech, then use the result's audio player or download its WAV. Saved outputs also appear in speech history. The voice must already exist in that server's saved-voice library; selecting it uses its reference recording.
+
+The live-action check exercises the same compiled generation action:
+
+```sh
+node --experimental-default-type=module wfe/test/audio-speech-live.mjs \
+  --base http://127.0.0.1:8000/open/voxcpm2-int8/ \
+  --voice SAVED_VOICE_NAME --text 'Hello.' --seconds 12 \
+  --out /absolute/path/new-speech-check
+```
+
+The output directory must not exist. The check verifies the selected voice, submitted text/model/seed, saved-history entry, downloaded WAV structure, PCM duration and non-silent samples, and records the complete WAV hash. It is a Node application-action check, not a browser rendering test, subjective audio assessment or proof of voice similarity. Comparison with retained native PCM is a separate check.
+
+The revised encoder's v3 UI runs passed for a short saved reference and a long saved reference: both produced 4.96 seconds of mono 48 kHz PCM16 audio, with generation times of 47.70 and 83.92 seconds respectively on the tested RX 550. These are individual fixed-prompt measurements, not general throughput. The earlier long-reference run failed memory admission; it remains retained as a failure, and no admission guard was relaxed. A third saved-voice run also passed, producing 3.36 seconds of audio in 35.57 seconds. All three checks exercised generation, saved history and WAV download. Independent ASR recovered the short-reference and third-run words, ignoring case; the long-reference output was transcribed with “I’m” and “W-L-P-R” instead of the requested “I am” and “WOPR”. This is not an exact-transcript pass for all three or a voice-similarity assessment. The final service receipts show all 16 saved voices ready, test workers unloaded and the service active/enabled. Sampled summed process DRM allocations peaked at 3,669,254,144 bytes; this is a sampled bound, not a continuous or allocator measurement. Independent comparisons found all 476,160 PCM bytes identical to the retained pre-change native baseline for each of the short- and long-reference runs. The third run passed WAV structure, duration and non-silence checks; no baseline PCM-parity claim is made for it.
+
 ## Build and open
 
 From the repository root, build the frontends **before** rebuilding the CLI so the executable embeds the new pages:

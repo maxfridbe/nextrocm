@@ -419,3 +419,34 @@ fn s25_a_clip_that_cannot_fit_even_with_every_server_gone_is_refused_at_once() {
     let n = BTreeMap::new();
     assert_eq!(room_for_video(&h, &VideoReq { model: &v, gpu: None, need_mb: &n }), Ok(Some(0)));
 }
+
+#[test]
+fn explicit_margin_uses_real_free_memory_and_keeps_default_policy() {
+    use backplane_scheduler::place::{place_with_margin, Outcome};
+    let h = FakeHost::new(&[4096], &[("audio", 1)]);
+    let m = h.add("voice", "audio", 3456, &[0], plain());
+    let n = needs(&m, 3456);
+    assert!(matches!(place(&h, &req(&m, &n)).unwrap(), Outcome::NotYet(_)));
+    assert_eq!(h.count("start"), 0);
+    assert!(matches!(place_with_margin(&h, &req(&m, &n), 256).unwrap(), Outcome::Placed { .. }));
+    assert_eq!(h.count("start"), 1);
+
+    let h = FakeHost::new(&[4096], &[("audio", 1)]);
+    let m = h.add("voice", "audio", 3600, &[0], plain());
+    let n = needs(&m, 3600); // 3796 free: 3600 + 256 cannot fit.
+    assert!(matches!(place_with_margin(&h, &req(&m, &n), 256).unwrap(), Outcome::NotYet(_)));
+    assert_eq!(h.count("start"), 0);
+}
+
+#[test]
+fn explicit_margin_rejects_bad_totals_and_honors_learned_asks() {
+    use backplane_scheduler::place::{place_with_margin, Outcome};
+    let h = FakeHost::new(&[4096], &[("audio", 1)]);
+    let m = h.add("voice", "audio", 3456, &[0], plain());
+    let n = needs(&m, 3456);
+    assert!(place_with_margin(&h, &req(&m, &n), 255).is_err());
+    assert!(place_with_margin(&h, &req(&m, &needs(&m, u64::MAX)), 256).is_err());
+    let mut request = req(&m, &n); request.asked_mb = 4000;
+    assert!(matches!(place_with_margin(&h, &request, 256).unwrap(), Outcome::NotYet(_)));
+    assert_eq!(h.count("start"), 0);
+}

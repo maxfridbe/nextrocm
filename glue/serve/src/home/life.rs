@@ -183,6 +183,42 @@ pub(super) fn vouch_cap(total: Option<u64>) -> u64 {
 /// `seen` what it took on each card while it ran here, else its model card's figures, else its files' (`files_mb`)
 /// share by kind - each never more than its card holds beside the spare (`vouch_cap` of `total`). Whether it was seen
 /// comes with it.
+/// An administrator's process reservation, separate from portable catalog estimates.
+/// Only non-spanning worker models use this policy; chat/video retain their existing paths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MemoryPolicy {
+    reservation_mb: u64,
+    margin_mb: u64,
+}
+
+fn memory_policy(m: &Value) -> Result<Option<MemoryPolicy>, String> {
+    let (reservation, margin) = (m.get("memory_reservation_mb"), m.get("memory_margin_mb"));
+    if reservation.is_none() && margin.is_none() {
+        return Ok(None);
+    }
+    let invalid = || "memory_reservation_mb and memory_margin_mb must both be integers: reservation > 0, margin >= 256 MiB, with a representable sum".to_string();
+    let reservation_mb = reservation.and_then(Value::as_u64).filter(|n| *n > 0).ok_or_else(invalid)?;
+    let margin_mb = margin.and_then(Value::as_u64).filter(|n| *n >= 256).ok_or_else(invalid)?;
+    reservation_mb.checked_add(margin_mb).ok_or_else(invalid)?;
+    if !matches!(registry::kind_of(m), "image" | "audio" | "model3d")
+        || registry::spans(m) || m["split"] == true || m["streams"] == true
+    {
+        return Err("explicit memory reservations require a non-spanning image, audio or model3d worker (not streams)".into());
+    }
+    Ok(Some(MemoryPolicy { reservation_mb, margin_mb }))
+}
+
+fn explicit_card_total(cards: &Value, gpu: usize) -> Option<u64> {
+    cards.as_array()?.iter()
+        .find(|c| c["index"].as_u64() == Some(gpu as u64))?
+        .get("vram_total_mb")?.as_u64().filter(|n| *n > 0)
+}
+
+fn policy_need(policy: MemoryPolicy, gpus: &[usize], seen: Option<&BTreeMap<usize, u64>>) -> BTreeMap<usize, u64> {
+    let peak = seen.and_then(|s| s.values().copied().max()).unwrap_or(0);
+    gpus.iter().map(|g| (*g, policy.reservation_mb.max(peak))).collect()
+}
+
 pub(super) fn vouch(
     m: &Value,
     gpus: &[usize],
@@ -190,6 +226,9 @@ pub(super) fn vouch(
     files_mb: u64,
     total: &dyn Fn(usize) -> Option<u64>,
 ) -> (BTreeMap<usize, u64>, bool) {
+    if let Ok(Some(policy)) = memory_policy(m) {
+        return (policy_need(policy, gpus, seen), seen.is_some_and(|s| !s.is_empty()));
+    }
     let single = one_card(m);
     let cap = |g: usize| vouch_cap(total(g));
     // a model that ran fits the card: a peak seen above what a card may be asked for (an edit's, with its vision tower,
@@ -524,6 +563,30 @@ pub(super) fn cards_it_fits(
     files_mb: u64,
     total: &dyn Fn(usize) -> Option<u64>,
 ) -> Result<Vec<usize>, String> {
+    cards_it_fits_with_seen(m, gpus, files_mb, total, None)
+}
+
+fn cards_it_fits_with_seen(
+    m: &Value,
+    gpus: &[usize],
+    files_mb: u64,
+    total: &dyn Fn(usize) -> Option<u64>,
+    seen: Option<&BTreeMap<usize, u64>>,
+) -> Result<Vec<usize>, String> {
+    if let Some(policy) = memory_policy(m)? {
+        let need = policy_need(policy, gpus, seen);
+        let mut fits = Vec::new();
+        for g in gpus {
+            let want = need[g].checked_add(policy.margin_mb).ok_or("observed memory plus margin overflows")?;
+            if total(*g).is_some_and(|t| t >= want) {
+                fits.push(*g);
+            }
+        }
+        if fits.is_empty() {
+            return Err(format!("{}: explicit memory reservation plus margin exceeds available card capacity, or capacity is unknown", s(m, "id")));
+        }
+        return Ok(fits);
+    }
     if m["streams"] == true || !matches!(registry::kind_of(m), "image" | "audio" | "model3d") {
         return Ok(gpus.to_vec());
     }
@@ -1352,6 +1415,7 @@ impl Home {
         let m = registry::find(&self.o.cfg, id)
             .map_err(|e| (500, e))?
             .ok_or_else(|| (404, format!("no model {id} (nextrocm models list)")))?;
+        memory_policy(&m).map_err(|e| (409, e))?;
         if registry::kind_of(&m) == "lora" {
             return Err((
                 400,
@@ -1844,9 +1908,13 @@ impl Home {
     ) -> Result<Result<Lease<'_>, String>, (u16, String)> {
         let _g = self.kind_lock[kind].lock().unwrap();
         let mut info = self.model_info(m);
-        let totals = totals_of(&self.cards.lock().unwrap());
-        info.gpus = cards_it_fits(m, &info.gpus, files_mb(m), &|g| card_total(&totals, g))
-            .map_err(|e| (409, e))?;
+        let cards = self.cards.lock().unwrap().clone();
+        let totals = totals_of(&cards);
+        let policy = memory_policy(m).map_err(|e| (409, e))?;
+        let seen = self.seen.lock().unwrap().get(id).cloned();
+        info.gpus = cards_it_fits_with_seen(m, &info.gpus, files_mb(m), &|g| {
+            if policy.is_some() { explicit_card_total(&cards, g) } else { card_total(&totals, g) }
+        }, seen.as_ref()).map_err(|e| (409, e))?;
         let blocked = self.taken_for(m);
         info.gpus.retain(|g| self.card_taken(*g).is_none());
         if blocked.is_some() || info.gpus.is_empty() {
@@ -1873,7 +1941,7 @@ impl Home {
         let (need, _) = self.vouched_mb(m, &totals_of(&self.cards.lock().unwrap()));
         let asked = self.asked.lock().unwrap().get(id).copied().unwrap_or(0);
         Ok(
-            match splace::place(
+            match splace::place_with_margin(
                 &Sched(self),
                 &PlaceReq {
                     model: &info,
@@ -1881,6 +1949,7 @@ impl Home {
                     need_mb: &need,
                     asked_mb: asked,
                 },
+                policy.map_or(MARGIN_MB, |p| p.margin_mb),
             )? {
                 Outcome::Placed { port, .. } => Ok(self.lease(port)),
                 Outcome::NotYet(why) => Err(why),
@@ -2145,6 +2214,7 @@ impl Home {
         else {
             return Ok(());
         };
+        memory_policy(m).map_err(|e| (409, e))?;
         let cur = self.chat_loaded(&all);
         if cur.as_deref() == Some(id) {
             return Ok(());
@@ -2378,6 +2448,14 @@ impl Home {
             }
         }
         let on_cards = registry::gpu_list(&on);
+        let entry = self.entry(id)?;
+        if let Some(policy) = memory_policy(&entry).map_err(|e| (409, e))? {
+            let cards = self.named_cards(&self.models());
+            let seen = self.seen.lock().unwrap().get(id).cloned();
+            let need = policy_need(policy, &on_cards, seen.as_ref());
+            let asked = self.asked.lock().unwrap().get(id).copied().unwrap_or(0);
+            policy_free_room(&cards, &on_cards, &need, policy.margin_mb, asked).map_err(|e| (503, e))?;
+        }
         if on_cards.len() > 1 {
             let entry = self.entry(id)?;
             let cards = self.named_cards(&self.models());
@@ -2640,6 +2718,7 @@ impl Home {
         }) else {
             return Ok(());
         };
+        memory_policy(m).map_err(|e| (409, e))?;
         if let Some(why) = self.taken_for(m) {
             return Err((503, why));
         }
@@ -3489,5 +3568,85 @@ mod span_admission_tests {
     fn huge_capacity_is_refused_without_overflow() {
         let m = json!({"id":"huge","kind":"audio","vram_gib":1e300});
         assert!(cards_it_fits(&m, &[0], 0, &|_| Some(4096)).is_err());
+    }
+}
+
+/// Recheck explicit reservations against the latest cached sampler view before launch.
+/// This is not an atomic GPU reservation; native allocation guards remain required. Missing telemetry is no room.
+fn policy_free_room(cards: &Value, on: &[usize], need: &BTreeMap<usize, u64>, margin: u64, asked: u64) -> Result<(), String> {
+    for g in on {
+        let want = need.get(g).copied().ok_or("missing GPU reservation")?
+            .checked_add(margin).ok_or("memory reservation plus margin overflows")?.max(asked);
+        let free = cards.as_array().into_iter().flatten()
+            .find(|c| c["index"].as_u64() == Some(*g as u64))
+            .and_then(|c| Some(c["vram_total_mb"].as_u64()?.saturating_sub(c["vram_used_mb"].as_u64()?)))
+            .unwrap_or(0);
+        if free < want {
+            return Err(format!("GPU {g}: explicit memory policy needs {want} MiB free, {free} MiB reported"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod explicit_memory_policy_tests {
+    use super::*;
+
+    fn model() -> Value {
+        json!({"id":"voice","kind":"audio","vram_gib":4,
+            "memory_reservation_mb":3456,"memory_margin_mb":256})
+    }
+
+    #[test]
+    fn policy_is_explicit_checked_and_not_a_catalog_rewrite() {
+        assert_eq!(memory_policy(&json!({"kind":"audio"})).unwrap(), None);
+        for bad in [json!(null), json!(-1), json!(0), json!(1.5), json!("3456")] {
+            let mut m = model(); m["memory_reservation_mb"] = bad;
+            assert!(memory_policy(&m).is_err());
+        }
+        for bad in [json!(null), json!(-1), json!(255), json!(256.5), json!("256")] {
+            let mut m = model(); m["memory_margin_mb"] = bad;
+            assert!(memory_policy(&m).is_err());
+        }
+        let mut m = model(); m.as_object_mut().unwrap().remove("memory_margin_mb");
+        assert!(memory_policy(&m).is_err());
+        let mut m = model(); m["memory_reservation_mb"] = json!(u64::MAX);
+        assert!(memory_policy(&m).is_err());
+        for key in ["split", "spans", "streams"] {
+            let mut m = model(); m[key] = json!(true); assert!(memory_policy(&m).is_err());
+        }
+        let mut m = model(); m["kind"] = json!("llm"); assert!(memory_policy(&m).is_err());
+        assert_eq!(model()["vram_gib"], 4);
+    }
+
+    #[test]
+    fn capacity_and_observed_peak_are_uncapped_and_fail_closed() {
+        let m = model();
+        assert_eq!(cards_it_fits(&m, &[0], 99999, &|_| Some(4096)).unwrap(), vec![0]);
+        assert!(cards_it_fits(&m, &[0], 0, &|_| None).is_err());
+        let other = json!([{"index":1,"vram_total_mb":24576}]);
+        assert!(cards_it_fits(&m, &[0], 0, &|g| explicit_card_total(&other, g)).is_err());
+        assert_eq!(explicit_card_total(&other, 1), Some(24576));
+        assert!(cards_it_fits(&m, &[0], 0, &|_| Some(3711)).is_err());
+        let seen = BTreeMap::from([(0, 3900)]);
+        assert!(cards_it_fits_with_seen(&m, &[0], 0, &|_| Some(4096), Some(&seen)).is_err());
+        let (need, measured) = vouch(&m, &[0], Some(&seen), 0, &|_| Some(4096));
+        assert!(measured); assert_eq!(need[&0], 3900);
+        let overflow = BTreeMap::from([(0, u64::MAX)]);
+        assert!(cards_it_fits_with_seen(&m, &[0], 0, &|_| Some(u64::MAX), Some(&overflow)).is_err());
+        assert!(cards_it_fits(&json!({"kind":"audio","vram_gib":4}), &[0], 0, &|_| Some(4096)).is_err());
+    }
+
+    #[test]
+    fn actual_free_room_and_learned_requirement_are_not_bypassed() {
+        let need = BTreeMap::from([(0, 3456)]);
+        let cards = json!([{"index":0,"vram_total_mb":4096,"vram_used_mb":384}]);
+        assert!(policy_free_room(&cards, &[0], &need, 256, 0).is_ok());
+        assert!(policy_free_room(&cards, &[0], &need, 256, 3713).is_err());
+        let busy = json!([{"index":0,"vram_total_mb":4096,"vram_used_mb":385}]);
+        assert!(policy_free_room(&busy, &[0], &need, 256, 0).is_err());
+        let unknown = json!([{"index":0,"vram_total_mb":4096}]);
+        assert!(policy_free_room(&unknown, &[0], &need, 256, 0).is_err());
+        assert!(policy_free_room(&json!([]), &[0], &need, 256, 0).is_err());
     }
 }

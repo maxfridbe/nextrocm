@@ -158,7 +158,9 @@ impl Lm {
             4,
         ])?;
         let half = mul(&[r, widest, 2])?;
-        let staging = if self.layers.first().is_some_and(|l| l.qkv.scale.is_some()) {
+        let staging = if ops.needs_int8_half_weights()
+            && self.layers.first().is_some_and(|l| l.qkv.scale.is_some())
+        {
             self.layers
                 .iter()
                 .flat_map(|l| [&l.qkv, &l.o, &l.gu, &l.down])
@@ -208,7 +210,7 @@ impl Lm {
             act: DevBuf::f32(g, r * self.ffn)?,
             tmp: DevBuf::f32(g, r * self.hidden)?,
             xh: DevBuf::new(g, r * widest * 2)?,
-            wh: match int8 {
+            wh: match int8 && ops.needs_int8_half_weights() {
                 true => Some(DevBuf::new(
                     g,
                     self.layers
